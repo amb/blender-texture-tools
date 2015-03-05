@@ -78,10 +78,12 @@ class GeneralImageOperator(bpy.types.Operator):
     def finish_images(self, context):
         print("Assign data")
         # assign pixels
-        self.image.pixels = self.pixels.flatten()     
-        #self.image.update()
-        bpy.ops.image.save_dirty()
-        self.image.reload()
+        self.image.pixels = self.pixels.flatten()    
+        if False:
+            # save and update image 
+            #self.image.update()
+            bpy.ops.image.save_dirty()
+            self.image.reload()
 
 class GimpSeamlessOperator(GeneralImageOperator):
     # TODO: the smoothing is not complete, it goes only one way
@@ -369,24 +371,43 @@ def unregister():
 if __name__ == "__main__":
     register()
 
-# space > Reload Scripts ... to clean up UI crap
+# ~~~ DOCUMENTATION ~~~
+    # space > Reload Scripts ... to clean up UI crap
 
     # stuff I want done:
 
     # Progress bar
-    # Third algorithm
 
     # after generation, update texture for materials
 
     # ??? drag & drop from google images
+
     # Normal/diffuse/height/cavitymap extraction from bitmap data
+    # convolution filters
 
-# drag & drop
-# import urllib
-# urllib.urlretrieve ("http://www.example.com/songs/mp3.mp3", "mp3.mp3")
+    #--------------------------
 
-# import urllib2
-# mp3file = urllib2.urlopen("http://www.example.com/songs/mp3.mp3")
-# output = open('test.mp3','wb')
-# output.write(mp3file.read())
-# output.close()
+    # drag & drop
+    # import urllib
+    # urllib.urlretrieve ("http://www.example.com/songs/mp3.mp3", "mp3.mp3")
+
+    # import urllib2
+    # mp3file = urllib2.urlopen("http://www.example.com/songs/mp3.mp3")
+    # output = open('test.mp3','wb')
+    # output.write(mp3file.read())
+    # output.close()
+
+
+    # [22:14] == Ambient [5b9f2a1e@gateway/web/freenode/ip.91.159.42.30] has joined #blenderpython
+    # [22:15] <Ambient> I'm changing image data inside a script, then when I want it to update to the image editor and the 3d view, I do: bpy.ops.image.save_dirty(); self.image.reload()
+    # [22:15] <Ambient> while this works, are there some unforeseen consequences I should be worried of?
+    # [22:16] <Ambient> image pixel data that is
+    # [23:24] <Ambient> also is there a way to update the image to the 3d view and the image editor without actually saving the image to the disk?
+    # [23:30] <purplefrog> Ambient: that's a good question.  i1.update() does not accomplish the mission.
+    # [23:30] <Ambient> yes, I already tried that
+    # [23:32] <purplefrog> I'm not finding anything on the areas[].spaces[] that looks like it should work either.
+    # [23:33] <purplefrog> Although C.screen.areas[6].spaces[0].image = i1 accomplishes the mission, although it does seem mighty clumsy to iterate through all the areas looking for a space.type=='IMAGE_EDITOR' and re-setting it if it matches the problem image.
+    # [23:34] == JuxTApoze has changed nick to Oblique-Angl
+    # [23:35] <Ambient> i also have to update everything the object is linked to
+    # [23:35] <Ambient> the image that is
+    # [23:35] <purplefrog> And to affect the 3d view you'd probably be messing with the preview layer (like set_UV_editor_texture() in http://web.purplefrog.com/~thoth/blender/python-cookbook/meshFromBathymetry.html
