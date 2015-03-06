@@ -24,7 +24,8 @@ bl_info = {
     "description": "Makes seamless textures out of source data",
     "author": "Tommi Hyppänen",
     "location": "Image Editor > Tool Shelf > Texture Tools",
-    "version": (0, 1, 1),
+    "documentation": "http://blenderartists.org/forum/showthread.php?364409-WIP-Seamless-texture-patching-addon",
+    "version": (0, 1, 2),
     "blender": (2, 73, 0)
 }
 
@@ -54,9 +55,9 @@ bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(name="Filter type"
     ("EMBOSS", "Emboss", "", 4),
     ("SHARPEN", "Sharpen", "", 2),
     ("EDGEDETECT", "Edge detect", "", 3),
-    ("GAUSSIAN", "Gaussian", "", 5),
+    ("GAUSSIAN", "Gaussian blur ro:5", "", 5),
     ("BLUR", "Box blur", "", 1)])
-bpy.types.Scene.seamless_filter_size = bpy.props.IntProperty(name="Size", default=1, min=1, max=3)
+bpy.types.Scene.seamless_filter_size = bpy.props.IntProperty(name="Size", default=1, min=1, max=9)
 bpy.types.Scene.seamless_filter_intensity = bpy.props.FloatProperty(name="Intensity", default=1.0, min=0.0, max=3.0)
 
 class GeneralImageOperator(bpy.types.Operator):
@@ -95,16 +96,14 @@ class GeneralImageOperator(bpy.types.Operator):
             self.image.reload()
 
 def convolution(ssp, intens, sfil):    
-    # source, target, intensity, filter matrix    
+    # source, intensity, convolution matrix    
     tpx = numpy.zeros(ssp.shape, dtype=float)
     tpx[:,:,3] = 1.0
     ystep = int(4*ssp.shape[1])
     norms = 0
-    sfx = int(sfil.shape[1]/2)
-    sfy = int(sfil.shape[0]/2)
     for y in range(sfil.shape[0]):
         for x in range(sfil.shape[1]):
-            tpx += numpy.roll(ssp, (x-sfx)*4 + (y-sfy)*ystep) * sfil[y,x]
+            tpx += numpy.roll(ssp, (x-int(sfil.shape[1]/2))*4 + (y-int(sfil.shape[0]/2))*ystep) * sfil[y,x]
             norms += sfil[y,x]
     if norms > 0:
         tpx /= norms
@@ -115,43 +114,49 @@ class ConvolutionsOperator(GeneralImageOperator):
     bl_idname = "uv.gimp_convolutions"
     bl_label = "Convolution filters"
 
-    foo = "dfdf"
+    def filter_blur(s):
+        return numpy.ones((1+s*2, 1+s*2), dtype=float)
 
-    filter_blur = numpy.array( \
-        [[   1,   1,   1],
-         [   1,   1,   1],
-         [   1,   1,   1]])
+    def filter_sharpen(s): 
+        return numpy.array( \
+            [[   0,  -1,   0],
+             [  -1,   4,  -1],
+             [   0,  -1,   0]])
 
-    filter_sharpen = numpy.array( \
-        [[   0,  -1,   0],
-         [  -1,   5,  -1],
-         [   0,  -1,   0]])
+    def filter_edgedetect(s):
+        return numpy.array( \
+            [[   0,   1,   0],
+             [   1,  -4,   1],
+             [   0,   1,   0]])
 
-    filter_edgedetect = numpy.array( \
-        [[   0,   1,   0],
-         [   1,  -4,   1],
-         [   0,   1,   0]])
+    def filter_emboss(s):
+        return numpy.array( \
+            [[  -2,   1,   0],
+             [  -1,   1,   1],
+             [   0,   1,   2]])
 
-    filter_emboss = numpy.array( \
-        [[  -2,   1,   0],
-         [  -1,   1,   1],
-         [   0,   1,   2]])
+    def filter_gaussian(s):
+        temp = numpy.ones((1+s*2, 1+s*2), dtype=float)
+        a = 1.0/numpy.sqrt(2*numpy.pi)
+        xs = int(temp.shape[1]/2)
+        ys = int(temp.shape[0]/2)
+        ro = 5.0 ** 2
+        for y in range(0, temp.shape[0]):
+            for x in range(0, temp.shape[1]):
+                temp[y,x] =  (1.0/numpy.sqrt(2*numpy.pi*ro)) * (2.71828 ** (-((x-xs)**2 + (y-ys)**2)/(2*ro)))
+        return temp
 
-    filter_gaussian = numpy.array( \
-        [[   1,   2,   1],
-         [   2,   4,   2],
-         [   1,   2,   1]])
-
-    filter_unsharp = numpy.array( \
-        [[   1,   4,   6,   4,   1],
-         [   4,  16,  24,  16,   4],
-         [   6,  24,-476,  24,   6],
-         [   4,  16,  24,  16,   4],
-         [   1,   4,   6,   4,   1]])
+    def filter_unsharp(s): 
+        return numpy.array( \
+            [[   1,   4,   6,   4,   1],
+             [   4,  16,  24,  16,   4],
+             [   6,  24,-476,  24,   6],
+             [   4,  16,  24,  16,   4],
+             [   1,   4,   6,   4,   1]])
 
     def calculate(self, context):
         self.pixels = convolution(self.sourcepixels, context.scene.seamless_filter_intensity, 
-            self.selected_filter)
+            self.selected_filter(context.scene.seamless_filter_size))
 
     def execute(self, context):
         self.selected_filter = {
