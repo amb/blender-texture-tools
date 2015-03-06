@@ -51,10 +51,13 @@ def availableObjects(self, context):
 bpy.types.Scene.seamless_input_image = bpy.props.EnumProperty(name="Input image", items=availableObjects)
 
 bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(name="Filter type", items=[
-    ("BLUR", "Blur", "", 1),
+    ("EMBOSS", "Emboss", "", 4),
     ("SHARPEN", "Sharpen", "", 2),
     ("EDGEDETECT", "Edge detect", "", 3),
-    ("EMBOSS", "Emboss", "", 4)])
+    ("GAUSSIAN", "Gaussian", "", 5),
+    ("BLUR", "Box blur", "", 1)])
+bpy.types.Scene.seamless_filter_size = bpy.props.IntProperty(name="Size", default=1, min=1, max=3)
+bpy.types.Scene.seamless_filter_intensity = bpy.props.FloatProperty(name="Intensity", default=1.0, min=0.0, max=3.0)
 
 class GeneralImageOperator(bpy.types.Operator):
     def init_images(self, context):
@@ -91,6 +94,22 @@ class GeneralImageOperator(bpy.types.Operator):
             bpy.ops.image.save_dirty()
             self.image.reload()
 
+def convolution(ssp, intens, sfil):    
+    # source, target, intensity, filter matrix    
+    tpx = numpy.zeros(ssp.shape, dtype=float)
+    tpx[:,:,3] = 1.0
+    ystep = int(4*ssp.shape[1])
+    norms = 0
+    sfx = int(sfil.shape[1]/2)
+    sfy = int(sfil.shape[0]/2)
+    for y in range(sfil.shape[0]):
+        for x in range(sfil.shape[1]):
+            tpx += numpy.roll(ssp, (x-sfx)*4 + (y-sfy)*ystep) * sfil[y,x]
+            norms += sfil[y,x]
+    if norms > 0:
+        tpx /= norms
+    return ssp + (tpx-ssp) * intens
+
 class ConvolutionsOperator(GeneralImageOperator):
     """Image filter operator"""
     bl_idname = "uv.gimp_convolutions"
@@ -118,29 +137,32 @@ class ConvolutionsOperator(GeneralImageOperator):
          [  -1,   1,   1],
          [   0,   1,   2]])
 
-    def calculate(self):
-        ssp = self.sourcepixels
-        ystep = int(4*self.xs)
-        norms = 0
-        sfil = self.selected_filter
-        sfx = int(sfil.shape[1]/2)
-        sfy = int(sfil.shape[0]/2)
-        for y in range(sfil.shape[0]):
-            for x in range(sfil.shape[1]):
-                self.pixels += numpy.roll(ssp, (x-sfx)*4 + (y-sfy)*ystep) * sfil[y,x]
-                norms += sfil[y,x]
-        if norms > 0:
-            self.pixels /= norms
+    filter_gaussian = numpy.array( \
+        [[   1,   2,   1],
+         [   2,   4,   2],
+         [   1,   2,   1]])
+
+    filter_unsharp = numpy.array( \
+        [[   1,   4,   6,   4,   1],
+         [   4,  16,  24,  16,   4],
+         [   6,  24,-476,  24,   6],
+         [   4,  16,  24,  16,   4],
+         [   1,   4,   6,   4,   1]])
+
+    def calculate(self, context):
+        self.pixels = convolution(self.sourcepixels, context.scene.seamless_filter_intensity, 
+            self.selected_filter)
 
     def execute(self, context):
         self.selected_filter = {
             "BLUR":ConvolutionsOperator.filter_blur,
             "EDGEDETECT":ConvolutionsOperator.filter_edgedetect,
             "SHARPEN":ConvolutionsOperator.filter_sharpen,
+            "GAUSSIAN":ConvolutionsOperator.filter_gaussian,
             "EMBOSS":ConvolutionsOperator.filter_emboss } \
             [context.scene.seamless_filter_type]
         self.init_images(context)
-        self.calculate()
+        self.calculate(context)
         self.finish_images(context)
                 
         return {'FINISHED'}  
@@ -432,6 +454,10 @@ class TextureToolsFiltersPanel(bpy.types.Panel):
         row.prop(context.scene, "seamless_filter_type")
 
         row = layout.row()
+        row.prop(context.scene, "seamless_filter_size")
+        row.prop(context.scene, "seamless_filter_intensity")
+
+        row = layout.row()
         row.operator(ConvolutionsOperator.bl_idname, text="Filter")
 
 def register():
@@ -483,6 +509,9 @@ if __name__ == "__main__":
     # Normalize
     # Grayscale
     # Offset by half
+
+    # Dilate
+    # Erode
 
 
     # [22:14] == Ambient [5b9f2a1e@gateway/web/freenode/ip.91.159.42.30] has joined #blenderpython
