@@ -50,6 +50,12 @@ def availableObjects(self, context):
 
 bpy.types.Scene.seamless_input_image = bpy.props.EnumProperty(name="Input image", items=availableObjects)
 
+bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(name="Filter type", items=[
+    ("BLUR", "Blur", "", 1),
+    ("SHARPEN", "Sharpen", "", 2),
+    ("EDGEDETECT", "Edge detect", "", 3),
+    ("EMBOSS", "Emboss", "", 4)])
+
 class GeneralImageOperator(bpy.types.Operator):
     def init_images(self, context):
         self.input_image = context.scene.seamless_input_image
@@ -85,19 +91,73 @@ class GeneralImageOperator(bpy.types.Operator):
             bpy.ops.image.save_dirty()
             self.image.reload()
 
+class ConvolutionsOperator(GeneralImageOperator):
+    """Image filter operator"""
+    bl_idname = "uv.gimp_convolutions"
+    bl_label = "Convolution filters"
+
+    foo = "dfdf"
+
+    filter_blur = numpy.array( \
+        [[   1,   1,   1],
+         [   1,   1,   1],
+         [   1,   1,   1]])
+
+    filter_sharpen = numpy.array( \
+        [[   0,  -1,   0],
+         [  -1,   5,  -1],
+         [   0,  -1,   0]])
+
+    filter_edgedetect = numpy.array( \
+        [[   0,   1,   0],
+         [   1,  -4,   1],
+         [   0,   1,   0]])
+
+    filter_emboss = numpy.array( \
+        [[  -2,   1,   0],
+         [  -1,   1,   1],
+         [   0,   1,   2]])
+
+    def calculate(self):
+        ssp = self.sourcepixels
+        ystep = int(4*self.xs)
+        norms = 0
+        sfil = self.selected_filter
+        sfx = int(sfil.shape[1]/2)
+        sfy = int(sfil.shape[0]/2)
+        for y in range(sfil.shape[0]):
+            for x in range(sfil.shape[1]):
+                self.pixels += numpy.roll(ssp, (x-sfx)*4 + (y-sfy)*ystep) * sfil[y,x]
+                norms += sfil[y,x]
+        if norms > 0:
+            self.pixels /= norms
+
+    def execute(self, context):
+        self.selected_filter = {
+            "BLUR":ConvolutionsOperator.filter_blur,
+            "EDGEDETECT":ConvolutionsOperator.filter_edgedetect,
+            "SHARPEN":ConvolutionsOperator.filter_sharpen,
+            "EMBOSS":ConvolutionsOperator.filter_emboss } \
+            [context.scene.seamless_filter_type]
+        self.init_images(context)
+        self.calculate()
+        self.finish_images(context)
+                
+        return {'FINISHED'}  
+
 class GimpSeamlessOperator(GeneralImageOperator):
     # TODO: the smoothing is not complete, it goes only one way
-    """Image Seamless patcher operator"""
+    """Image seamless generator operator"""
     bl_idname = "uv.gimp_seamless_operator"
     bl_label = "Gimp-style Image Seamless Operator"
 
     def gimpify(self):
         self.pixels = numpy.copy(self.sourcepixels)
         self.sourcepixels = numpy.roll(self.sourcepixels,self.xs*2+self.xs*4*int(self.ys/2))
+
         margin = self.seamless_gimpmargin
         if margin>self.xs:
             margin = int(self.xs)
-
 
         sxs = int(self.xs/2)
         sys = int(self.ys/2)
@@ -137,6 +197,8 @@ class GimpSeamlessOperator(GeneralImageOperator):
                 x1 = x+t/2
                 if x1>0:
                     imask[i,0:x1] = numpy.arange(1.0, 0.0, -1/x1)[0:x1]
+
+        # NO PREMATURE OPTIMIZATION
 
         #t = int(margin*numpy.sin(i*numpy.pi/(self.ys/2))/2)
 
@@ -195,7 +257,7 @@ class GimpSeamlessOperator(GeneralImageOperator):
         return {'FINISHED'}  
 
 class SeamlessOperator(GeneralImageOperator):
-    """Image Seamless patcher operator"""
+    """Image seamless texture patcher operator"""
     bl_idname = "uv.seamless_operator"
     bl_label = "Image Seamless Operator"
 
@@ -358,15 +420,33 @@ class TextureToolsPanel(bpy.types.Panel):
         row = layout.row()
         row.operator(GimpSeamlessOperator.bl_idname, text="Make seamless (fast)")
 
+class TextureToolsFiltersPanel(bpy.types.Panel):
+    bl_space_type = 'IMAGE_EDITOR'
+    bl_region_type = 'TOOLS'
+    bl_label = "Image Filters"
+    bl_category = "Texture Tools"
+
+    def draw(self, context):
+        layout = self.layout
+        row = layout.row()
+        row.prop(context.scene, "seamless_filter_type")
+
+        row = layout.row()
+        row.operator(ConvolutionsOperator.bl_idname, text="Filter")
+
 def register():
     bpy.utils.register_class(SeamlessOperator)
     bpy.utils.register_class(GimpSeamlessOperator)
+    bpy.utils.register_class(ConvolutionsOperator)    
     bpy.utils.register_class(TextureToolsPanel)
+    bpy.utils.register_class(TextureToolsFiltersPanel)
 
 def unregister():
     bpy.utils.unregister_class(SeamlessOperator)
     bpy.utils.unregister_class(GimpSeamlessOperator)
+    bpy.utils.unregister_class(ConvolutionsOperator)
     bpy.utils.unregister_class(TextureToolsPanel)
+    bpy.utils.unregister_class(TextureToolsFiltersPanel)
 
 if __name__ == "__main__":
     register()
@@ -396,6 +476,13 @@ if __name__ == "__main__":
     # output = open('test.mp3','wb')
     # output.write(mp3file.read())
     # output.close()
+
+    # -------- FUTURE TOOLS:
+    # Invert
+    # Lighting Lighting_balance
+    # Normalize
+    # Grayscale
+    # Offset by half
 
 
     # [22:14] == Ambient [5b9f2a1e@gateway/web/freenode/ip.91.159.42.30] has joined #blenderpython
