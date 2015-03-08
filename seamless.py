@@ -25,7 +25,7 @@ bl_info = {
     "author": "Tommi Hyppänen",
     "location": "Image Editor > Tool Shelf > Texture Tools",
     "documentation": "http://blenderartists.org/forum/showthread.php?364409-WIP-Seamless-texture-patching-addon",
-    "version": (0, 1, 2),
+    "version": (0, 1, 4),
     "blender": (2, 73, 0)
 }
 
@@ -60,6 +60,7 @@ bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(name="Filter type"
     ("FASTGAUSSIAN", "Fast gaussian (defunct)", "", 6),
     ("SOBEL", "Sobel", "", 7),
     ("NORMALSSIMPLE", "Normal map: simple", "", 8),
+    ("SEPARATEVALUES", "Emphasize whites or blacks", "", 9),
     ])
 bpy.types.Scene.seamless_filter_size = bpy.props.IntProperty(name="Size", default=1, min=1, max=9)
 bpy.types.Scene.seamless_filter_intensity = bpy.props.FloatProperty(name="Intensity", default=1.0, min=0.0, max=3.0)
@@ -128,22 +129,22 @@ class ConvolutionsOperator(GeneralImageOperator):
     bl_label = "Convolution filters"
 
     def filter_blur(self, s, intensity):
-        self.pixels =  convolution(self.sourcepixels, intensity, numpy.ones((1+s*2, 1+s*2), dtype=float))
+        self.pixels = convolution(self.sourcepixels, intensity, numpy.ones((1+s*2, 1+s*2), dtype=float))
 
     def filter_sharpen(self, s, intensity): 
-        self.pixels =  convolution(self.sourcepixels, intensity, numpy.array( \
+        self.pixels = convolution(self.sourcepixels, intensity, numpy.array( \
             [[  -1,  -1,  -1],
              [  -1,   9,  -1],
              [  -1,  -1,  -1]]))
 
     def filter_edgedetect(self, s, intensity):
-        self.pixels =  convolution(self.sourcepixels, intensity, numpy.array( \
+        self.pixels = convolution(self.sourcepixels, intensity, numpy.array( \
             [[   0,   1,   0],
              [   1,  -4,   1],
              [   0,   1,   0]]))
 
     def filter_emboss(self, s, intensity):
-        self.pixels =  convolution(self.sourcepixels, intensity, numpy.array( \
+        self.pixels = convolution(self.sourcepixels, intensity, numpy.array( \
             [[  -2,   1,   0],
              [  -1,   1,   1],
              [   0,   1,   2]]))
@@ -176,16 +177,16 @@ class ConvolutionsOperator(GeneralImageOperator):
         gradx = convolution(self.sourcepixels, 1.0, gx)
         gradx[:,:,2] = (gradx[:,:,0] + gradx[:,:,1] + gradx[:,:,2])*intensity/3
         gradx[:,:,1] = 0
-        gradx[:,:,0] = -1
+        gradx[:,:,0] = 1
 
         grady = convolution(self.sourcepixels, 1.0, gy)
         grady[:,:,2] = (grady[:,:,0] + grady[:,:,1] + grady[:,:,2])*intensity/3
-        grady[:,:,1] = -1
+        grady[:,:,1] = 1
         grady[:,:,0] = 0
 
         vectors = normalize(numpy.cross(gradx[:,:,:3], grady[:,:,:3]))
 
-        self.pixels[:,:,0] = vectors[:,:,0] + 0.5
+        self.pixels[:,:,0] = 0.5 - vectors[:,:,0]
         self.pixels[:,:,1] = vectors[:,:,1] + 0.5
         self.pixels[:,:,2] = vectors[:,:,2]
         self.pixels[:,:,3] = 1.0
@@ -205,6 +206,13 @@ class ConvolutionsOperator(GeneralImageOperator):
         self.pixels = convolution(self.pixels, 1.0, gy) 
         self.pixels = self.pixels * intensity
         self.pixels[:,:,3] = 1.0
+
+    def filter_separate_values(self, s, intensity):
+        ssp = self.sourcepixels
+        #self.pixels[...,0] = numpy.cos(ssp[...,0] * numpy.pi)/2+0.5
+        vals = (ssp[...,0] + ssp[...,1] + ssp[...,2])/3
+        self.pixels = (-numpy.cos(ssp * 2 * numpy.pi)/2+0.5)**intensity
+        self.pixels[...,3] = 1.0
 
     def filter_unsharp(self, s, intensity): 
         self.pixels = convolution(self.sourcepixels, intensity, numpy.array( \
@@ -226,6 +234,7 @@ class ConvolutionsOperator(GeneralImageOperator):
             "FASTGAUSSIAN":self.filter_fast_gaussian,
             "SOBEL":self.filter_sobel,
             "NORMALSSIMPLE":self.filter_normals_simple,
+            "SEPARATEVALUES":self.filter_separate_values,
             "EMBOSS":self.filter_emboss } \
             [context.scene.seamless_filter_type]
         self.init_images(context)
