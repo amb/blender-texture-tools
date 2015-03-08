@@ -57,7 +57,7 @@ bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(name="Filter type"
     ("EDGEDETECT", "Edge detect", "", 3),
     ("EMBOSS", "Emboss", "", 4),
     ("GAUSSIAN", "Gaussian blur ro:5", "", 5),
-    ("FASTGAUSSIAN", "Fast gaussian (defunct)", "", 6),
+    ("FASTGAUSSIAN", "Fast gaussian", "", 6),
     ("SOBEL", "Sobel", "", 7),
     ("NORMALSSIMPLE", "Normal map: simple", "", 8),
     ("SEPARATEVALUES", "Emphasize whites or blacks", "", 9),
@@ -121,7 +121,6 @@ def normalize(arr):
     arr[...,1] *= m
     arr[...,2] *= m
     return arr
-    #np.apply_along_axis(np.linalg.norm, 1, vectors)
 
 class ConvolutionsOperator(GeneralImageOperator):
     """Image filter operator"""
@@ -161,25 +160,23 @@ class ConvolutionsOperator(GeneralImageOperator):
         self.pixels = convolution(self.sourcepixels, intensity, fil)
 
     def filter_fast_gaussian(self, s, intensity):
-        self.pixels = convolution(self.sourcepixels, intensity, numpy.ones((1+s*2, 1+s*2), dtype=float))
+        d = 2 ** s
+        tpx = self.sourcepixels
+        ystep = tpx.shape[1]
+        while d > 1:
+            tpx = (tpx*2 + numpy.roll(tpx,-d*4) + numpy.roll(tpx, d*4))/4
+            tpx = (tpx*2 + numpy.roll(tpx,-d*(ystep*4)) + numpy.roll(tpx, d*(ystep*4)))/4
+            d = int(d/2)
+        self.pixels = tpx
+
 
     def filter_normals_simple(self, s, intensity):
-        gx = numpy.array( \
-            [[  -1,   0,   1],
-             [  -2,   0,   2],
-             [  -1,   0,   1]])
-
-        gy = numpy.array( \
-            [[   1,   2,   1],
-             [   0,   0,   0],
-             [  -1,  -2,  -1]])
-
-        gradx = convolution(self.sourcepixels, 1.0, gx)
+        gradx = self._filter_sobel_x(self.sourcepixels, 1.0) 
         gradx[:,:,2] = (gradx[:,:,0] + gradx[:,:,1] + gradx[:,:,2])*intensity/3
         gradx[:,:,1] = 0
         gradx[:,:,0] = 1
 
-        grady = convolution(self.sourcepixels, 1.0, gy)
+        grady = self._filter_sobel_y(self.sourcepixels, 1.0) 
         grady[:,:,2] = (grady[:,:,0] + grady[:,:,1] + grady[:,:,2])*intensity/3
         grady[:,:,1] = 1
         grady[:,:,0] = 0
@@ -191,19 +188,23 @@ class ConvolutionsOperator(GeneralImageOperator):
         self.pixels[:,:,2] = vectors[:,:,2]
         self.pixels[:,:,3] = 1.0
 
-    def filter_sobel(self, s, intensity):
+    def _filter_sobel_x(self, source, intensity):
         gx = numpy.array( \
             [[  -1,   0,   1],
              [  -2,   0,   2],
-             [  -1,   0,   1]])
-
+             [  -1,   0,   1]])  
+        return convolution(source, 1.0, gx) * intensity
+        
+    def _filter_sobel_y(self, source, intensity):
         gy = numpy.array( \
             [[   1,   2,   1],
              [   0,   0,   0],
              [  -1,  -2,  -1]])
+        return convolution(source, 1.0, gy) * intensity
 
-        self.pixels = convolution(self.sourcepixels, 1.0, gx) 
-        self.pixels = convolution(self.pixels, 1.0, gy) 
+    def filter_sobel(self, s, intensity):
+        self.pixels = self._filter_sobel_x(self.sourcepixels, 1.0) 
+        self.pixels+= self._filter_sobel_y(self.sourcepixels, 1.0) 
         self.pixels = self.pixels * intensity
         self.pixels[:,:,3] = 1.0
 
@@ -253,81 +254,25 @@ class GimpSeamlessOperator(GeneralImageOperator):
         self.pixels = numpy.copy(self.sourcepixels)
         self.sourcepixels = numpy.roll(self.sourcepixels,self.xs*2+self.xs*4*int(self.ys/2))
 
-        margin = self.seamless_gimpmargin
-        if margin>self.xs:
-            margin = int(self.xs)
+        # margin = self.seamless_gimpmargin
+        # if margin>self.xs:
+        #     margin = int(self.xs)
 
         sxs = int(self.xs/2)
         sys = int(self.ys/2)
 
-        # create the blending interpolation line
-        #pix = numpy.zeros((margin,4), dtype=float)
-        #for i in range(margin):
-        #    pix[i,:] = [(margin-i)/margin, (margin-i)/margin, (margin-i)/margin, 1.0]
-
-        # imask = numpy.zeros(self.pixels.shape, dtype=float)
-
-        # generate 1 of the four corners of the blending mask
-        # for i in range(0, int(self.ys/2)):
-        #     x = int(self.xs/2-i*self.xs/self.ys)
-        #     t = int( margin * (numpy.cos((i+1)/360)+1.2) )
-        #     if t<3:
-        #         t = 3
-        #     length = numpy.maximum(t/2-x, 0)
-        #     x0 = numpy.maximum(x-t/2, 0) 
-        #     imask[i,0:x0+1] = [1.0, 1.0, 1.0, 1.0]
-        #     x1 = x - (t-1)/2
-
-        #     if length >= t or x1 + length < 0 or t < 0 or length < 0 or x1 < 0:
-        #         continue
-        #     imask[i,x1+length:x1+t] = pix[length:t]
+        # generate the mask
         imask = numpy.zeros((self.pixels.shape[0], self.pixels.shape[1]), dtype=float) 
-        for i in range(0, sys):
-            x = int(sxs - i*self.xs/self.ys)
-            t = int(margin*(  (1-(1-numpy.sin(i*numpy.pi/sys))**1) )/2)
-            if t <= 1:
-                t = 1
-            x0 = x - t/2
-            if x0 >= 0:
-                imask[i,0:x0] = 1.0
-                imask[i,x0:x0+t] = numpy.arange(1.0, 0.0, -1/t)[0:t]
-            else:
-                x1 = x+t/2
-                if x1>0:
-                    imask[i,0:x1] = numpy.arange(1.0, 0.0, -1/x1)[0:x1]
+        for y in range(0, sys):
+            zy0 = y/sys+0.001
+            zy1 = 1-y/sys+0.001
+            for x in range(0, sxs):
+                zx0 = 1-x/sxs+0.001
+                imask[y,x] = (1-zy0/zx0)
+                zx1 = x/sxs+0.001
+                imask[y,x] = numpy.maximum((1-zx1/zy1), imask[y,x])
 
-        # NO PREMATURE OPTIMIZATION
-
-        #t = int(margin*numpy.sin(i*numpy.pi/(self.ys/2))/2)
-
-        # fac = 1.0
-        # xpatch = numpy.arange(1.0, 0.0, -1/sxs)[0:sxs] ** fac
-        # ypatch = numpy.arange(1.0, 0.0, -1/sys)[0:sys] ** fac
-        # image A: x + y > 1.0 (numpy.where(imask[0:sys,i]+ypatch>1.0, 1.0, 0.0))
-        # image B: x * y
-        # grey center line: imask[0:sys,i] = (imask[0:sys,i]**0.5) * (ypatch**0.5)
-        # for i in range(0, sys):
-        #     imask[i,0:sxs] = xpatch
-        # for i in range(0, sxs):
-        #     imask[0:sys,i] = (imask[0:sys,i]**2) * (ypatch**2)
-
-        # def lerpp(length, endval):
-        #     return numpy.arange(1.0, endval, -(1.0-endval)/length)
-
-        # def lerppn(length, endval):
-        #     return numpy.arange(endval, 1.0, endval/length)
-
-        # for y in range(0,sys):
-        #     xl = int(y*self.xs/self.ys)
-        #     nxl = int(1.0-y*self.xs/self.ys)
-        #     if xl <= 0 or y == 0 or nxl <= 0:
-        #         continue
-
-        #     blk = lerpp(xl, 1.0-y/sys)
-        #     imask[y,0:blk.shape[0]] = blk
-
-        #     blk = lerppn(nxl, y/sys)
-            #imask[y,sxs-blk.shape[0]:sxs] = blk
+        imask[imask<0] = 0
 
         # copy the data into the three remaining corners
         imask[0:self.ys/2+1, self.xs/2:self.xs-1] = numpy.fliplr(imask[0:self.ys/2+1, 0:self.xs/2-1])
@@ -343,7 +288,6 @@ class GimpSeamlessOperator(GeneralImageOperator):
         amask[:,:,3] = 1.0
 
         self.pixels = amask * self.sourcepixels + (numpy.ones(amask.shape) - amask) * self.pixels
-
         #self.pixels = amask
 
     def execute(self, context):
@@ -366,10 +310,7 @@ class SeamlessOperator(GeneralImageOperator):
             return numpy.sum(((b1-b2)*[0.2989, 0.5870, 0.1140, 0.0])**2)
         else:
             return self.maxSSD
-        
-    def sobel(self):
-        pass
-        
+
     def stitch(self,x,y):
         dimage = self.pixels
         simage = self.sourcepixels
@@ -512,8 +453,8 @@ class TextureToolsPanel(bpy.types.Panel):
         row = layout.row()
         row.label("Fast and simple:")
                 
-        row = layout.row()
-        row.prop(context.scene, "seamless_gimpmargin")
+        # row = layout.row()
+        # row.prop(context.scene, "seamless_gimpmargin")
         
         row = layout.row()
         row.operator(GimpSeamlessOperator.bl_idname, text="Make seamless (fast)")
