@@ -94,11 +94,7 @@ class GeneralImageOperator(bpy.types.Operator):
         print("Assign data")
         # assign pixels
         self.image.pixels = self.pixels.flatten()    
-        if False:
-            # save and update image 
-            #self.image.update()
-            bpy.ops.image.save_dirty()
-            self.image.reload()
+        bpy.ops.image.invert(invert_r=False, invert_g=False, invert_b=False, invert_a=False)
 
 def convolution(ssp, intens, sfil):    
     # source, intensity, convolution matrix    
@@ -212,7 +208,8 @@ class ConvolutionsOperator(GeneralImageOperator):
         ssp = self.sourcepixels
         #self.pixels[...,0] = numpy.cos(ssp[...,0] * numpy.pi)/2+0.5
         vals = (ssp[...,0] + ssp[...,1] + ssp[...,2])/3
-        self.pixels = (-numpy.cos(ssp * 2 * numpy.pi)/2+0.5)**intensity
+        #self.pixels = (-numpy.cos(ssp * 2 * numpy.pi)/2+0.5)**intensity
+        self.pixels = ssp ** intensity
         self.pixels[...,3] = 1.0
 
     def filter_unsharp(self, s, intensity): 
