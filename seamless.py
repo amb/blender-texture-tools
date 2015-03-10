@@ -22,10 +22,10 @@ bl_info = {
     "name": "Image Seamless Operators",
     "category": "Paint",
     "description": "Makes seamless textures out of source data",
-    "author": "Tommi Hyppänen",
+    "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Tool Shelf > Texture Tools",
     "documentation": "http://blenderartists.org/forum/showthread.php?364409-WIP-Seamless-texture-patching-addon",
-    "version": (0, 1, 4),
+    "version": (0, 1, 5),
     "blender": (2, 73, 0)
 }
 
@@ -61,6 +61,7 @@ bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(name="Filter type"
     ("SOBEL", "Sobel", "", 7),
     ("NORMALSSIMPLE", "Normal map: simple", "", 8),
     ("SEPARATEVALUES", "Emphasize whites or blacks", "", 9),
+    ("REVERSEGRADIENT", "Reconstruct from gradients", "", 10),
     ])
 bpy.types.Scene.seamless_filter_size = bpy.props.IntProperty(name="Size", default=1, min=1, max=9)
 bpy.types.Scene.seamless_filter_intensity = bpy.props.FloatProperty(name="Intensity", default=1.0, min=0.0, max=3.0)
@@ -133,10 +134,13 @@ class ConvolutionsOperator(GeneralImageOperator):
              [  -1,  -1,  -1]]))
 
     def filter_edgedetect(self, s, intensity):
-        self.pixels = convolution(self.sourcepixels, intensity, numpy.array( \
+        self.pixels = (convolution(self.sourcepixels, intensity, numpy.array( \
             [[   0,   1,   0],
              [   1,  -4,   1],
-             [   0,   1,   0]]))
+             [   0,   1,   0]])))*0.5+0.5            
+            # [[   0,   0,   0],
+            #  [   1,  -1,   0],
+            #  [   0,   0,   0]])))*0.5+0.5
 
     def filter_emboss(self, s, intensity):
         self.pixels = convolution(self.sourcepixels, intensity, numpy.array( \
@@ -201,8 +205,42 @@ class ConvolutionsOperator(GeneralImageOperator):
     def filter_sobel(self, s, intensity):
         self.pixels = self._filter_sobel_x(self.sourcepixels, 1.0) 
         self.pixels+= self._filter_sobel_y(self.sourcepixels, 1.0) 
-        self.pixels = self.pixels * intensity
+        self.pixels = (self.pixels * intensity)*0.5+0.5
         self.pixels[:,:,3] = 1.0
+
+    def _normalize(self, img):
+        t = img - numpy.min(img)
+        return t / numpy.max(t)
+
+    def filter_reverse_gradient(self, s, intensity):
+        ssp = self.sourcepixels
+        u = numpy.zeros(ssp.shape, dtype=float)
+        ystep = u.shape[1]*4
+
+        # convert to gradients
+        b = numpy.zeros(ssp.shape)
+        b[:,:-1] = numpy.diff(ssp, axis=1)
+        #b[:-1,:] = numpy.diff(b, axis=0)
+
+        # solve poisson
+        for i in range(5):
+            u2 = numpy.zeros(u.shape, dtype=float)
+            u2[1:-1,1:-1] = (u[0:-2,1:-1] + u[2:,1:-1] +
+                 u[1:-1,0:-2] + u[1:-1,2:] + b[1:-1,1:-1])/4
+            u = u2
+
+        print(repr(numpy.max(b))+", "+repr(numpy.min(b)))
+        for i in range(10):
+            print(repr(numpy.sum(b[5+i,:,0])))
+
+        self.pixels = b
+        # restore from gradients
+        b = numpy.roll(b, 4)
+        b[:,0] = ssp[:,0]
+        self.pixels = numpy.cumsum(b,axis=1)
+
+        #self.pixels = self._normalize(self.pixels)
+        self.pixels[...,3] = 1.0
 
     def filter_separate_values(self, s, intensity):
         ssp = self.sourcepixels
@@ -233,6 +271,7 @@ class ConvolutionsOperator(GeneralImageOperator):
             "SOBEL":self.filter_sobel,
             "NORMALSSIMPLE":self.filter_normals_simple,
             "SEPARATEVALUES":self.filter_separate_values,
+            "REVERSEGRADIENT":self.filter_reverse_gradient,
             "EMBOSS":self.filter_emboss } \
             [context.scene.seamless_filter_type]
         self.init_images(context)
@@ -492,18 +531,13 @@ if __name__ == "__main__":
     register()
 
 # ~~~ DOCUMENTATION ~~~
-    # space > Reload Scripts ... to clean up UI crap
-
     # stuff I want done:
 
     # Progress bar
 
-    # after generation, update texture for materials
-
     # ??? drag & drop from google images
 
     # Normal/diffuse/height/cavitymap extraction from bitmap data
-    # convolution filters
 
     #--------------------------
 
@@ -518,7 +552,6 @@ if __name__ == "__main__":
     # output.close()
 
     # -------- FUTURE TOOLS:
-    # Invert
     # Lighting Lighting_balance
     # Normalize
     # Grayscale
@@ -526,18 +559,3 @@ if __name__ == "__main__":
 
     # Dilate
     # Erode
-
-
-    # [22:14] == Ambient [5b9f2a1e@gateway/web/freenode/ip.91.159.42.30] has joined #blenderpython
-    # [22:15] <Ambient> I'm changing image data inside a script, then when I want it to update to the image editor and the 3d view, I do: bpy.ops.image.save_dirty(); self.image.reload()
-    # [22:15] <Ambient> while this works, are there some unforeseen consequences I should be worried of?
-    # [22:16] <Ambient> image pixel data that is
-    # [23:24] <Ambient> also is there a way to update the image to the 3d view and the image editor without actually saving the image to the disk?
-    # [23:30] <purplefrog> Ambient: that's a good question.  i1.update() does not accomplish the mission.
-    # [23:30] <Ambient> yes, I already tried that
-    # [23:32] <purplefrog> I'm not finding anything on the areas[].spaces[] that looks like it should work either.
-    # [23:33] <purplefrog> Although C.screen.areas[6].spaces[0].image = i1 accomplishes the mission, although it does seem mighty clumsy to iterate through all the areas looking for a space.type=='IMAGE_EDITOR' and re-setting it if it matches the problem image.
-    # [23:34] == JuxTApoze has changed nick to Oblique-Angl
-    # [23:35] <Ambient> i also have to update everything the object is linked to
-    # [23:35] <Ambient> the image that is
-    # [23:35] <purplefrog> And to affect the 3d view you'd probably be messing with the preview layer (like set_UV_editor_texture() in http://web.purplefrog.com/~thoth/blender/python-cookbook/meshFromBathymetry.html
