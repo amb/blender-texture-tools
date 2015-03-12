@@ -87,7 +87,7 @@ def normalize(arr):
 
 class ConvolutionsOperator(GeneralImageOperator):
     """Image filter operator"""
-    bl_idname = "uv.gimp_convolutions"
+    bl_idname = "uv.image_convolutions"
     bl_label = "Convolution filters"
 
     def filter_blur(self, s, intensity):
@@ -116,6 +116,17 @@ class ConvolutionsOperator(GeneralImageOperator):
              [   0,   0,   0],
              [  -1,  -2,  -1]])
         return convolution(source, 1.0, gy) * intensity
+
+    def _box_clamp(self, x1, y1, x2, y2, minx, miny, maxx, maxy):
+        if x1 < minx:
+            x1 = minx
+        if x2 > maxx:
+            x2 = maxx
+        if y1 < miny:
+            y1 = miny
+        if y2 > maxy:
+            y2 = maxy
+        return (x1,y1,x2,y2)
 
     def filter_edgedetect(self, s, intensity):
         self.pixels = (convolution(self.sourcepixels, intensity, numpy.array( \
@@ -193,8 +204,15 @@ class ConvolutionsOperator(GeneralImageOperator):
         self.pixels =  u + self.sourcepixels
 
     def filter_separate_values(self, s, intensity):
-        self.pixels = self.sourcepixels ** intensity
-        self.pixels[...,3] = 1.0
+        self.pixels[...,:3] = self.sourcepixels[...,:3] ** intensity
+
+    def filter_grayscale(self, s, intensity):
+        ssp = self.sourcepixels
+        r, g, b = ssp[:,:,0], ssp[:,:,1], ssp[:,:,2]
+        gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
+        self.pixels[...,0] = gray
+        self.pixels[...,1] = gray
+        self.pixels[...,2] = gray
 
     def filter_bilateral(self, s, intensity): 
         ssp = self.sourcepixels
@@ -219,18 +237,7 @@ class ConvolutionsOperator(GeneralImageOperator):
                 si = 1+int(numpy.abs((1-m)*2*s))
                 a = numpy.array(ssp[y,x], dtype=float)
 
-                x1 = x-si
-                if x1 < 0:
-                    x1 = 0
-                x2 = x+si+1
-                if x2 > ssx-1:
-                    x2 = ssx-1
-                y1 = y-si
-                if y1 < 0:
-                    y1 = 0
-                y2 = y+si+1
-                if y2 > ssy-1:
-                    y2 = ssy-1
+                x1,y1,x2,y2 = self._box_clamp(x-si, y-si, x+si+1, y+si+1, 0, 0, ssx-1, ssy-1)
                 if x1<x2 and y1<y2:
                     #blockmul =  numpy.abs(1-b[y1:y2, x1:x2])
                     block = ssp[y1:y2, x1:x2]# * blockmul
@@ -258,6 +265,7 @@ class ConvolutionsOperator(GeneralImageOperator):
             "SEPARATEVALUES":self.filter_separate_values,
             "POISSONTILES":self.filter_poisson_blending,
             "BILATERAL":self.filter_bilateral,
+            "GRAYSCALE":self.filter_grayscale,
             "EMBOSS":self.filter_emboss } \
             [context.scene.seamless_filter_type]
         self.init_images(context)
@@ -439,6 +447,53 @@ class SeamlessOperator(GeneralImageOperator):
         self.finish_images(context)
                 
         return {'FINISHED'}    
+
+class MaterialTextureGenerator(bpy.types.Operator):
+    bl_idname = "uv.material_texgen"
+    bl_label = "Generate textures for a material"
+        
+    def execute(self, context):
+        self.input_material = context.scene.seamless_input_material
+        self.input_image = bpy.data.images[context.scene.seamless_input_image]
+
+        self.xs = self.input_image.size[0]
+        self.ys = self.input_image.size[1]
+
+        print("Assign data")
+        print(repr(self.input_material))
+        mat = bpy.data.materials[self.input_material]
+        textures = []
+        for t in mat.texture_slots.values():
+            if t:
+                textures.append(t)
+                print(t)
+        print(textures)
+        matn = self.input_material
+
+        difftex = matn+'_t_d'
+        normtex = matn+'_t_n'
+        spectex = matn+'_t_s'
+
+        diffimg = matn+'_d'
+        normimg = matn+'_n'
+        specimg = matn+'_s'
+
+        bpy.data.textures.new(difftex, 'IMAGE')
+        bpy.data.textures.new(normtex, 'IMAGE')
+        bpy.data.textures.new(spectex, 'IMAGE')
+
+        bpy.data.textures[difftex].image = self.input_image.copy()
+        bpy.data.textures[difftex].image.name = diffimg
+        bpy.data.textures[normtex].image = bpy.data.images.new(normimg, width=self.xs, height=self.ys)
+        bpy.data.textures[spectex].image = bpy.data.images.new(specimg, width=self.xs, height=self.ys)
+
+        for i in range(3):
+            bpy.data.materials[matn].texture_slots.create(i)
+        bpy.data.materials[matn].texture_slots[0].texture = bpy.data.textures[difftex]
+        bpy.data.materials[matn].texture_slots[1].texture = bpy.data.textures[normtex]
+        bpy.data.materials[matn].texture_slots[2].texture = bpy.data.textures[spectex]
+   
+        return {'FINISHED'}    
     
 class TextureToolsPanel(bpy.types.Panel):
     bl_space_type = 'IMAGE_EDITOR'
@@ -448,12 +503,6 @@ class TextureToolsPanel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-
-        row = layout.row()
-        row.prop(context.scene, "seamless_input_image")
-
-        row = layout.row()
-        row.prop(context.scene, "seamless_generated_name")
 
         row = layout.row()
         row.label("Patched:")
@@ -502,15 +551,37 @@ class TextureToolsFiltersPanel(bpy.types.Panel):
 class TextureToolsMaterialsPanel(bpy.types.Panel):
     bl_space_type = 'IMAGE_EDITOR'
     bl_region_type = 'TOOLS'
-    bl_label = "I'm a Material Girl"
+    bl_label = "Material Tools"
     bl_category = "Texture Tools"
 
     def draw(self, context):
         layout = self.layout
+        # row = layout.row()
+        # row.label("In a material world.")
+
         row = layout.row()
-        row.label("In a material world.")
+        row.prop(context.scene, "seamless_input_material")
+
+        row = layout.row()
+        row.operator(MaterialTextureGenerator.bl_idname, text="Generate textures")
+
+class TextureToolsImageSelectionPanel(bpy.types.Panel):
+    bl_space_type = 'IMAGE_EDITOR'
+    bl_region_type = 'TOOLS'
+    bl_label = "Image Selection"
+    bl_category = "Texture Tools"
+
+    def draw(self, context):
+        layout = self.layout
+
+        row = layout.row()
+        row.prop(context.scene, "seamless_input_image")
+
+        row = layout.row()
+        row.prop(context.scene, "seamless_generated_name")
 
 def register():
+    # SEAMLESS PANEL
     bpy.types.Scene.seamless_samples = bpy.props.IntProperty(name="Samples", default=100, min=1, max=10000)
     bpy.types.Scene.seamless_window = bpy.props.IntProperty(name="Window", default=32, min=2, max=128)
     bpy.types.Scene.seamless_overlap = bpy.props.IntProperty(name="Overlap", default=8, min=1, max=64)
@@ -529,6 +600,7 @@ def register():
 
     bpy.types.Scene.seamless_input_image = bpy.props.EnumProperty(name="Input image", items=availableObjects)
 
+    # FILTER PANEL
     bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(name="Filter type", items=[
         ("BLUR", "Box blur", "", 1),
         ("SHARPEN", "Sharpen", "", 2),
@@ -541,12 +613,24 @@ def register():
         ("SEPARATEVALUES", "Emphasize whites or blacks", "", 9),
         ("POISSONTILES", "Blend image edges", "", 10),
         ("BILATERAL", "Bilateral blur", "", 11),
+        ("GRAYSCALE", "Grayscale", "", 12),    
         ])
     bpy.types.Scene.seamless_filter_size = bpy.props.IntProperty(name="Size", default=1, min=1, max=9)
     bpy.types.Scene.seamless_filter_intensity = bpy.props.FloatProperty(name="Intensity", default=1.0, min=0.0, max=3.0)
 
-    regclasses = [SeamlessOperator, GimpSeamlessOperator, ConvolutionsOperator, TextureToolsPanel, 
-                  TextureToolsFiltersPanel, TextureToolsMaterialsPanel]
+    # MATERIALS PANEL
+    available_materials = []
+    def availableMaterials(self, context):
+        available_materials.clear()
+        for im in bpy.data.materials:
+            name = im.name
+            available_materials.append((name, name, name))
+        return available_materials
+    bpy.types.Scene.seamless_input_material = bpy.props.EnumProperty(name="Material", items=availableMaterials)
+
+    # register classes
+    regclasses = [SeamlessOperator, GimpSeamlessOperator, ConvolutionsOperator, TextureToolsImageSelectionPanel, TextureToolsPanel, 
+                  TextureToolsFiltersPanel, TextureToolsMaterialsPanel, MaterialTextureGenerator]
 
     for entry in regclasses:
         bpy.utils.register_class(entry)
