@@ -482,37 +482,40 @@ class MaterialTextureGenerator(bpy.types.Operator):
         bpy.data.textures.new(normtex, 'IMAGE')
         bpy.data.textures.new(spectex, 'IMAGE')
 
-        bpy.data.textures[difftex].image = self.input_image.copy()
-        bpy.data.textures[difftex].image.name = diffimg
+        # GENERATE DIFFUSE
+        bpy.data.textures[difftex].image = bpy.data.images.new(diffimg, width=self.xs, height=self.ys)
+        sourcepixels = numpy.array(self.input_image.pixels).reshape((self.ys,self.xs,4))
+        bpy.data.textures[difftex].image.pixels = sourcepixels.flatten() 
 
+        # GENERATE NORMALS
         bpy.data.textures[normtex].image = bpy.data.images.new(normimg, width=self.xs, height=self.ys)
         bpy.data.textures[normtex].use_normal_map = True
+        
+        # copy image data into much more performant numpy arrays
+        sourcepixels = numpy.array(self.input_image.pixels).reshape((self.ys,self.xs,4))
+        pixels = numpy.ones((self.ys,self.xs,4))
 
-        if 1:
-            # copy image data into much more performant numpy arrays
-            sourcepixels = numpy.array(self.input_image.pixels).reshape((self.ys,self.xs,4))
-            pixels = numpy.ones((self.ys,self.xs,4))
+        gradx = ConvolutionsOperator._filter_sobel_x(sourcepixels, 1.0) 
+        gradx[:,:,2] = (gradx[:,:,0] + gradx[:,:,1] + gradx[:,:,2])/3
+        gradx[:,:,1] = 0
+        gradx[:,:,0] = 1
 
-            gradx = ConvolutionsOperator._filter_sobel_x(sourcepixels, 1.0) 
-            gradx[:,:,2] = (gradx[:,:,0] + gradx[:,:,1] + gradx[:,:,2])/3
-            gradx[:,:,1] = 0
-            gradx[:,:,0] = 1
+        grady = ConvolutionsOperator._filter_sobel_y(sourcepixels, 1.0) 
+        grady[:,:,2] = (grady[:,:,0] + grady[:,:,1] + grady[:,:,2])/3
+        grady[:,:,1] = 1
+        grady[:,:,0] = 0
 
-            grady = ConvolutionsOperator._filter_sobel_y(sourcepixels, 1.0) 
-            grady[:,:,2] = (grady[:,:,0] + grady[:,:,1] + grady[:,:,2])/3
-            grady[:,:,1] = 1
-            grady[:,:,0] = 0
+        vectors = normalize(numpy.cross(gradx[:,:,:3], grady[:,:,:3]))
 
-            vectors = normalize(numpy.cross(gradx[:,:,:3], grady[:,:,:3]))
-
-            pixels[:,:,0] = 0.5 - vectors[:,:,0]
-            pixels[:,:,1] = vectors[:,:,1] + 0.5
-            pixels[:,:,2] = vectors[:,:,2]
-            pixels[:,:,3] = 1.0
+        pixels[:,:,0] = 0.5 - vectors[:,:,0]
+        pixels[:,:,1] = vectors[:,:,1] + 0.5
+        pixels[:,:,2] = vectors[:,:,2]
+        pixels[:,:,3] = 1.0
+        
+        # assign pixels
+        bpy.data.textures[normtex].image.pixels = pixels.flatten()    
             
-            # assign pixels
-            bpy.data.textures[normtex].image.pixels = pixels.flatten()    
-            
+        # GENERATE SPEC
         bpy.data.textures[spectex].image = bpy.data.images.new(specimg, width=self.xs, height=self.ys)
 
         ssp = numpy.array(self.input_image.pixels).reshape((self.ys,self.xs,4))
