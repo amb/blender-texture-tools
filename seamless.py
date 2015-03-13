@@ -99,25 +99,25 @@ class ConvolutionsOperator(GeneralImageOperator):
              [  -1,   9,  -1],
              [  -1,  -1,  -1]]))
 
-    def _normalize(self, img):
+    def _normalize(img):
         t = img - numpy.min(img)
         return t / numpy.max(t)
 
-    def _filter_sobel_x(self, source, intensity):
+    def _filter_sobel_x(source, intensity):
         gx = numpy.array( \
             [[  -1,   0,   1],
              [  -2,   0,   2],
              [  -1,   0,   1]])  
         return convolution(source, 1.0, gx) * intensity
         
-    def _filter_sobel_y(self, source, intensity):
+    def _filter_sobel_y(source, intensity):
         gy = numpy.array( \
             [[   1,   2,   1],
              [   0,   0,   0],
              [  -1,  -2,  -1]])
         return convolution(source, 1.0, gy) * intensity
 
-    def _box_clamp(self, x1, y1, x2, y2, minx, miny, maxx, maxy):
+    def _box_clamp(x1, y1, x2, y2, minx, miny, maxx, maxy):
         if x1 < minx:
             x1 = minx
         if x2 > maxx:
@@ -162,12 +162,12 @@ class ConvolutionsOperator(GeneralImageOperator):
         self.pixels = tpx
 
     def filter_normals_simple(self, s, intensity):
-        gradx = self._filter_sobel_x(self.sourcepixels, 1.0) 
+        gradx = ConvolutionsOperator._filter_sobel_x(self.sourcepixels, 1.0) 
         gradx[:,:,2] = (gradx[:,:,0] + gradx[:,:,1] + gradx[:,:,2])*intensity/3
         gradx[:,:,1] = 0
         gradx[:,:,0] = 1
 
-        grady = self._filter_sobel_y(self.sourcepixels, 1.0) 
+        grady = ConvolutionsOperator._filter_sobel_y(self.sourcepixels, 1.0) 
         grady[:,:,2] = (grady[:,:,0] + grady[:,:,1] + grady[:,:,2])*intensity/3
         grady[:,:,1] = 1
         grady[:,:,0] = 0
@@ -180,8 +180,8 @@ class ConvolutionsOperator(GeneralImageOperator):
         self.pixels[:,:,3] = 1.0
 
     def filter_sobel(self, s, intensity):
-        self.pixels = self._filter_sobel_x(self.sourcepixels, 1.0) 
-        self.pixels+= self._filter_sobel_y(self.sourcepixels, 1.0) 
+        self.pixels = ConvolutionsOperator._filter_sobel_x(self.sourcepixels, 1.0) 
+        self.pixels+= ConvolutionsOperator._filter_sobel_y(self.sourcepixels, 1.0) 
         self.pixels = (self.pixels * intensity)*0.5+0.5
         self.pixels[:,:,3] = 1.0
 
@@ -220,8 +220,8 @@ class ConvolutionsOperator(GeneralImageOperator):
         ystep = ssp.shape[1]*4
         nr = numpy.roll
 
-        b = numpy.abs(self._filter_sobel_x(ssp, 1.0))
-        b+= numpy.abs(self._filter_sobel_y(ssp, 1.0))
+        b = numpy.abs(ConvolutionsOperator._filter_sobel_x(ssp, 1.0))
+        b+= numpy.abs(ConvolutionsOperator._filter_sobel_y(ssp, 1.0))
         # smooth
         for _ in range(3):
             b = (nr(b,4)+nr(b,-4)+nr(b,ystep)+nr(b,-ystep)+b)/5
@@ -237,7 +237,7 @@ class ConvolutionsOperator(GeneralImageOperator):
                 si = 1+int(numpy.abs((1-m)*2*s))
                 a = numpy.array(ssp[y,x], dtype=float)
 
-                x1,y1,x2,y2 = self._box_clamp(x-si, y-si, x+si+1, y+si+1, 0, 0, ssx-1, ssy-1)
+                x1,y1,x2,y2 = ConvolutionsOperator._box_clamp(x-si, y-si, x+si+1, y+si+1, 0, 0, ssx-1, ssy-1)
                 if x1<x2 and y1<y2:
                     #blockmul =  numpy.abs(1-b[y1:y2, x1:x2])
                     block = ssp[y1:y2, x1:x2]# * blockmul
@@ -484,14 +484,64 @@ class MaterialTextureGenerator(bpy.types.Operator):
 
         bpy.data.textures[difftex].image = self.input_image.copy()
         bpy.data.textures[difftex].image.name = diffimg
+
         bpy.data.textures[normtex].image = bpy.data.images.new(normimg, width=self.xs, height=self.ys)
+        bpy.data.textures[normtex].use_normal_map = True
+
+        if 1:
+            # copy image data into much more performant numpy arrays
+            sourcepixels = numpy.array(self.input_image.pixels).reshape((self.ys,self.xs,4))
+            pixels = numpy.ones((self.ys,self.xs,4))
+
+            gradx = ConvolutionsOperator._filter_sobel_x(sourcepixels, 1.0) 
+            gradx[:,:,2] = (gradx[:,:,0] + gradx[:,:,1] + gradx[:,:,2])/3
+            gradx[:,:,1] = 0
+            gradx[:,:,0] = 1
+
+            grady = ConvolutionsOperator._filter_sobel_y(sourcepixels, 1.0) 
+            grady[:,:,2] = (grady[:,:,0] + grady[:,:,1] + grady[:,:,2])/3
+            grady[:,:,1] = 1
+            grady[:,:,0] = 0
+
+            vectors = normalize(numpy.cross(gradx[:,:,:3], grady[:,:,:3]))
+
+            pixels[:,:,0] = 0.5 - vectors[:,:,0]
+            pixels[:,:,1] = vectors[:,:,1] + 0.5
+            pixels[:,:,2] = vectors[:,:,2]
+            pixels[:,:,3] = 1.0
+            
+            # assign pixels
+            bpy.data.textures[normtex].image.pixels = pixels.flatten()    
+            
         bpy.data.textures[spectex].image = bpy.data.images.new(specimg, width=self.xs, height=self.ys)
 
+        ssp = numpy.array(self.input_image.pixels).reshape((self.ys,self.xs,4))
+        pixels = numpy.ones((self.ys,self.xs,4))
+        r, g, b = ssp[:,:,0], ssp[:,:,1], ssp[:,:,2]
+        gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
+        gray **= 4
+        gray = gray - numpy.min(gray)
+        gray/= numpy.max(gray)
+        pixels[...,0] = gray
+        pixels[...,1] = gray
+        pixels[...,2] = gray
+        bpy.data.textures[spectex].image.pixels = pixels.flatten()    
+
+        bpy.ops.image.invert(invert_r=False, invert_g=False, invert_b=False, invert_a=False)
+
+        bpy.data.materials[matn].specular_hardness = 30
+        bpy.data.materials[matn].specular_intensity = 0
         for i in range(3):
             bpy.data.materials[matn].texture_slots.create(i)
         bpy.data.materials[matn].texture_slots[0].texture = bpy.data.textures[difftex]
         bpy.data.materials[matn].texture_slots[1].texture = bpy.data.textures[normtex]
+        bpy.data.materials[matn].texture_slots[1].use_map_color_diffuse = False
+        bpy.data.materials[matn].texture_slots[1].use_map_normal = True
+        bpy.data.materials[matn].texture_slots[1].normal_factor = 0.5
         bpy.data.materials[matn].texture_slots[2].texture = bpy.data.textures[spectex]
+        bpy.data.materials[matn].texture_slots[2].use_map_color_diffuse = False
+        bpy.data.materials[matn].texture_slots[2].texture.use_alpha = False
+        bpy.data.materials[matn].texture_slots[2].use_map_specular = True
    
         return {'FINISHED'}    
     
