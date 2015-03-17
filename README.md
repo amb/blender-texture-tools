@@ -6,6 +6,10 @@ A Blender addon.
 
 Add the seamless.py file to Blender through *User Preferences > Add-ons > Install from file...*
 
+## Requirements
+
+Works best in tandem with Blender Internal render. Cycles is not supported at the moment, but may still work.
+
 ## Description
 
 Various utilities for handling images and generating new ones inside Blender. 
