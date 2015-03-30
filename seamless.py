@@ -36,11 +36,37 @@ class GeneralImageOperator(bpy.types.Operator):
     def init_images(self, context):
         self.input_image = context.scene.seamless_input_image
         self.target_image = context.scene.seamless_generated_name
+        self.seamless_powersoftwo = bpy.context.scene.seamless_powersoftwo
         
         print("Creating images...")
         self.size = bpy.data.images[self.input_image].size
         self.xs = self.size[0]
         self.ys = self.size[1]
+
+        # copy image data into much more performant numpy arrays
+        self.sourcepixels = numpy.array(bpy.data.images[self.input_image].pixels)
+        self.sourcepixels = self.sourcepixels.reshape((self.ys,self.xs,4))
+
+        # if limit to powers of two is selected, do it
+        offx = 0
+        offy = 0
+        if self.seamless_powersoftwo:
+            print("crop to 2^")
+            lxs = int(numpy.log2(self.xs))
+            lys = int(numpy.log2(self.ys))
+            offx = int((self.xs-2**lxs)/2)
+            offy = int((self.ys-2**lys)/2)
+            print("crop offset:"+repr(offx)+","+repr(offy))
+
+            if self.xs > 2**lxs:
+                self.xs = 2**lxs
+            if self.ys > 2**lys:
+                self.ys = 2**lys
+
+        # crop to center
+        self.sourcepixels = self.sourcepixels[offy:offy+self.ys,offx:offx+self.xs]
+        #self.sourcepixels = self.sourcepixels[0:self.ys,offx:offx+self.xs]
+        print("sshape:"+repr(self.sourcepixels.shape))
 
         # if target image exists, change the size to fit
         if self.target_image in bpy.data.images:
@@ -49,9 +75,6 @@ class GeneralImageOperator(bpy.types.Operator):
         else:
             self.image = bpy.data.images.new(self.target_image, width=self.xs, height=self.ys)
 
-        # copy image data into much more performant numpy arrays
-        self.sourcepixels = numpy.array(bpy.data.images[self.input_image].pixels)
-        self.sourcepixels = self.sourcepixels.reshape((self.ys,self.xs,4))
         self.pixels = numpy.zeros((self.ys,self.xs,4))
         self.pixels[:,:,3] = 1.0 # alpha is always 1.0 everywhere
         
@@ -292,6 +315,7 @@ class GimpSeamlessOperator(GeneralImageOperator):
         sys = int(self.ys/2)
 
         # generate the mask
+        print(self.pixels.shape)
         imask = numpy.zeros((self.pixels.shape[0], self.pixels.shape[1]), dtype=float) 
         for y in range(0, sys):
             zy0 = y/sys+0.001
@@ -633,6 +657,9 @@ class TextureToolsImageSelectionPanel(bpy.types.Panel):
         row = layout.row()
         row.prop(context.scene, "seamless_generated_name")
 
+        row = layout.row()
+        row.prop(context.scene, "seamless_powersoftwo")
+
 def register():
     # SEAMLESS PANEL
     bpy.types.Scene.seamless_samples = bpy.props.IntProperty(name="Samples", default=100, min=1, max=10000)
@@ -641,7 +668,6 @@ def register():
     bpy.types.Scene.seamless_lines = bpy.props.IntProperty(name="Lines", default=2, min=1, max=16)
     bpy.types.Scene.seamless_gimpmargin = bpy.props.IntProperty(name="Blending margin", default=200, min=1, max=1000)
     bpy.types.Scene.seamless_smoothing = bpy.props.BoolProperty(name="Patch smoothing")
-    bpy.types.Scene.seamless_generated_name = bpy.props.StringProperty(name="Output image", default="generated")
 
     available_objects = []
     def availableObjects(self, context):
@@ -651,7 +677,10 @@ def register():
             available_objects.append((name, name, name))
         return available_objects
 
+    # IMAGE SELECTION & TOOLS
+    bpy.types.Scene.seamless_generated_name = bpy.props.StringProperty(name="Output image", default="generated")
     bpy.types.Scene.seamless_input_image = bpy.props.EnumProperty(name="Input image", items=availableObjects)
+    bpy.types.Scene.seamless_powersoftwo = bpy.props.BoolProperty(name="Crop to powers of two")
 
     # FILTER PANEL
     bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(name="Filter type", items=[
