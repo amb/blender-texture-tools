@@ -25,7 +25,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Tool Shelf > Texture Tools",
     "documentation": "http://blenderartists.org/forum/showthread.php?364409-WIP-Seamless-texture-patching-addon",
-    "version": (0, 1, 5),
+    "version": (0, 1, 6),
     "blender": (2, 73, 0)
 }
 
@@ -65,7 +65,6 @@ class GeneralImageOperator(bpy.types.Operator):
 
         # crop to center
         self.sourcepixels = self.sourcepixels[offy:offy+self.ys,offx:offx+self.xs]
-        #self.sourcepixels = self.sourcepixels[0:self.ys,offx:offx+self.xs]
         print("sshape:"+repr(self.sourcepixels.shape))
 
         # if target image exists, change the size to fit
@@ -660,6 +659,18 @@ class TextureToolsImageSelectionPanel(bpy.types.Panel):
         row = layout.row()
         row.prop(context.scene, "seamless_powersoftwo")
 
+class ImageEditNodeTree(bpy.types.NodeTree):
+    # Description string
+    '''A custom node tree type that will show up in the node editor header'''
+    # Optional identifier string. If not explicitly defined, the python class name is used.
+    bl_idname = 'ImageTreeType'
+    # Label for nice name display
+    bl_label = 'Image Edit Node Tree'
+    # Icon identifier
+    # Note: If no icon is defined, the node tree will not show up in the editor header!
+    #       This can be used to make additional tree types for groups and similar nodes
+    bl_icon = 'COLOR'
+
 def register():
     # SEAMLESS PANEL
     bpy.types.Scene.seamless_samples = bpy.props.IntProperty(name="Samples", default=100, min=1, max=10000)
@@ -712,7 +723,7 @@ def register():
 
     # register classes
     regclasses = [SeamlessOperator, GimpSeamlessOperator, ConvolutionsOperator, TextureToolsImageSelectionPanel, TextureToolsPanel, 
-                  TextureToolsFiltersPanel, TextureToolsMaterialsPanel, MaterialTextureGenerator]
+                  TextureToolsFiltersPanel, TextureToolsMaterialsPanel, MaterialTextureGenerator, ImageEditNodeTree]
 
     for entry in regclasses:
         bpy.utils.register_class(entry)
