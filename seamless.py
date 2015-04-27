@@ -19,18 +19,20 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-    "name": "Image Seamless Operators",
+    "name": "Image Edit Operations",
     "category": "Paint",
-    "description": "Makes seamless textures out of source data",
+    "description": "Various image processing filters and operations",
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Tool Shelf > Texture Tools",
     "documentation": "http://blenderartists.org/forum/showthread.php?364409-WIP-Seamless-texture-patching-addon",
-    "version": (0, 1, 6),
+    "version": (0, 1, 7),
     "blender": (2, 73, 0)
 }
 
 import bpy
 import numpy
+
+#### IMAGE OPERATIONS
 
 class GeneralImageOperator(bpy.types.Operator):
     def init_images(self, context):
@@ -570,6 +572,8 @@ class MaterialTextureGenerator(bpy.types.Operator):
         bpy.data.materials[matn].texture_slots[2].use_map_specular = True
    
         return {'FINISHED'}    
+
+#### USER INTERFACE
     
 class TextureToolsPanel(bpy.types.Panel):
     bl_space_type = 'IMAGE_EDITOR'
@@ -659,17 +663,29 @@ class TextureToolsImageSelectionPanel(bpy.types.Panel):
         row = layout.row()
         row.prop(context.scene, "seamless_powersoftwo")
 
+#### NODE SYSTEM
+
 class ImageEditNodeTree(bpy.types.NodeTree):
-    # Description string
-    '''A custom node tree type that will show up in the node editor header'''
-    # Optional identifier string. If not explicitly defined, the python class name is used.
     bl_idname = 'ImageTreeType'
-    # Label for nice name display
     bl_label = 'Image Edit Node Tree'
-    # Icon identifier
-    # Note: If no icon is defined, the node tree will not show up in the editor header!
-    #       This can be used to make additional tree types for groups and similar nodes
     bl_icon = 'COLOR'
+
+class ImageInputNode(bpy.types.Node):
+    bl_idname = 'ImageInputNodeType'
+    bl_label = 'Image Input Node'
+    bl_icon = 'SOUND'
+
+    my_input_value = bpy.props.FloatProperty(name="Size", default=5.0, subtype="FACTOR")
+
+    @classmethod
+    def poll(cls, tree):
+        return tree.bl_idname == 'ImageTreeType'
+
+    def init(self, context):
+        my_input = self.inputs.new("NodeSocketFloat", "My Input")
+        my_input.value_property = "my_input_value"
+
+#### INITIALIZATION
 
 def register():
     # SEAMLESS PANEL
@@ -723,7 +739,8 @@ def register():
 
     # register classes
     regclasses = [SeamlessOperator, GimpSeamlessOperator, ConvolutionsOperator, TextureToolsImageSelectionPanel, TextureToolsPanel, 
-                  TextureToolsFiltersPanel, TextureToolsMaterialsPanel, MaterialTextureGenerator, ImageEditNodeTree]
+                  TextureToolsFiltersPanel, TextureToolsMaterialsPanel, MaterialTextureGenerator, 
+                  ImageEditNodeTree, ImageInputNode]
 
     for entry in regclasses:
         bpy.utils.register_class(entry)
@@ -735,7 +752,7 @@ def unregister():
 if __name__ == "__main__":
     register()
 
-# ~~~ DOCUMENTATION ~~~
+#### ~~~ DOCUMENTATION ~~~
     # stuff I want done:
 
     # Progress bar
@@ -759,7 +776,6 @@ if __name__ == "__main__":
     # -------- FUTURE TOOLS:
     # Lighting Lighting_balance
     # Normalize
-    # Grayscale
     # Offset by half
 
     # Dilate
