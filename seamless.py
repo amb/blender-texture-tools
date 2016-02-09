@@ -130,8 +130,8 @@ class ImageOperations():
              [-1, 9, -1],
              [-1, -1, -1]]))
 
-    def normalize(self, img):
-        t = img - numpy.min(img)
+    def normalize(self):
+        t = self.sourcepixels - numpy.min(self.sourcepixels)
         return t / numpy.max(t)
 
     def sobel_x(self, intensity):
@@ -186,7 +186,7 @@ class ImageOperations():
             tpx = (tpx * 2 + numpy.roll(tpx, -d * 4) + numpy.roll(tpx, d * 4)) / 4
             tpx = (tpx * 2 + numpy.roll(tpx, -d * (ystep * 4)) + numpy.roll(tpx, d * (ystep * 4))) / 4
             d = int(d / 2)
-        return  tpx
+        return tpx
 
     def normals_simple(self, s, intensity):
         gradx = self.sobel_x(1.0)
@@ -542,25 +542,7 @@ class MaterialTextureGenerator(bpy.types.Operator):
         bpy.data.textures[normtex].use_normal_map = True
 
         # copy image data into much more performant numpy arrays
-        sourcepixels = numpy.array(self.input_image.pixels).reshape((self.ys, self.xs, 4))
-        pixels = numpy.ones((self.ys, self.xs, 4))
-
-        gradx = ConvolutionsOperator._filter_sobel_x(sourcepixels, 1.0)
-        gradx[:, :, 2] = (gradx[:, :, 0] + gradx[:, :, 1] + gradx[:, :, 2]) / 3
-        gradx[:, :, 1] = 0
-        gradx[:, :, 0] = 1
-
-        grady = ConvolutionsOperator._filter_sobel_y(sourcepixels, 1.0)
-        grady[:, :, 2] = (grady[:, :, 0] + grady[:, :, 1] + grady[:, :, 2]) / 3
-        grady[:, :, 1] = 1
-        grady[:, :, 0] = 0
-
-        vectors = normalize(numpy.cross(gradx[:, :, :3], grady[:, :, :3]))
-
-        pixels[:, :, 0] = 0.5 - vectors[:, :, 0]
-        pixels[:, :, 1] = vectors[:, :, 1] + 0.5
-        pixels[:, :, 2] = vectors[:, :, 2]
-        pixels[:, :, 3] = 1.0
+        pixels = ImageOperations(numpy.array(self.input_image.pixels).reshape((self.ys, self.xs, 4))).normals_simple(1, 1.0)
 
         # assign pixels
         bpy.data.textures[normtex].image.pixels = pixels.flatten()
@@ -764,9 +746,7 @@ if __name__ == "__main__":
     #unregister()
     register()
 
-    # ### ~~~ DOCUMENTATION ~~~
-    # stuff I want done:
-
+    # TODO:
     # Progress bar
 
     # ??? drag & drop from google images
