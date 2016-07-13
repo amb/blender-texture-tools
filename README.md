@@ -4,7 +4,7 @@ A Blender addon.
 
 ## Installation
 
-Add the seamless.py file to Blender through *User Preferences > Add-ons > Install from file...*
+Download https://raw.githubusercontent.com/amb/blender-texture-tools/master/seamless.py, save it to your computer and add the seamless.py file to Blender through *User Preferences > Add-ons > Install from file...*
 
 ## Requirements
 
