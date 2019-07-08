@@ -23,7 +23,7 @@ bl_info = {
     "category": "Paint",
     "description": "Various image processing filters and operations",
     "author": "Tommi Hyppänen (ambi)",
-    "location": "Image Editor > Tool Shelf > Texture Tools",
+    "location": "Image Editor > Tool Shelf > Image Edit",
     "documentation": "http://blenderartists.org/forum/"
     "showthread.php?364409-WIP-Seamless-texture-patching-addon",
     "version": (0, 1, 9),
@@ -530,7 +530,6 @@ class SeamlessOperator(GeneralImageOperator):
         return {"FINISHED"}
 
 
-# noinspection PyAttributeOutsideInit,PyAttributeOutsideInit,PyAttributeOutsideInit,PyAttributeOutsideInit
 class MaterialTextureGenerator(bpy.types.Operator):
     bl_idname = "uv.material_texgen"
     bl_label = "Generate textures for a material"
@@ -626,15 +625,15 @@ class MaterialTextureGenerator(bpy.types.Operator):
 
 class TextureToolsPanel(bpy.types.Panel):
     bl_space_type = "IMAGE_EDITOR"
-    bl_region_type = "TOOLS"
+    bl_region_type = "UI"
     bl_label = "Seamless Patching"
-    bl_category = "Texture Tools"
+    bl_category = "Image Edit"
 
     def draw(self, context):
         layout = self.layout
 
         row = layout.row()
-        row.label("Patched:")
+        row.label(text="Patched:")
 
         row = layout.row()
         row.prop(context.scene, "seamless_samples")
@@ -651,7 +650,7 @@ class TextureToolsPanel(bpy.types.Panel):
         row.operator(SeamlessOperator.bl_idname, text="Make seamless (patches)")
 
         row = layout.row()
-        row.label("Fast and simple:")
+        row.label(text="Fast and simple:")
 
         # row = layout.row()
         # row.prop(context.scene, "seamless_gimpmargin")
@@ -662,9 +661,9 @@ class TextureToolsPanel(bpy.types.Panel):
 
 class TextureToolsFiltersPanel(bpy.types.Panel):
     bl_space_type = "IMAGE_EDITOR"
-    bl_region_type = "TOOLS"
+    bl_region_type = "UI"
     bl_label = "Image Filters"
-    bl_category = "Texture Tools"
+    bl_category = "Image Edit"
 
     def draw(self, context):
         layout = self.layout
@@ -681,9 +680,9 @@ class TextureToolsFiltersPanel(bpy.types.Panel):
 
 class TextureToolsMaterialsPanel(bpy.types.Panel):
     bl_space_type = "IMAGE_EDITOR"
-    bl_region_type = "TOOLS"
+    bl_region_type = "UI"
     bl_label = "Material Tools"
-    bl_category = "Texture Tools"
+    bl_category = "Image Edit"
 
     def draw(self, context):
         layout = self.layout
@@ -699,9 +698,9 @@ class TextureToolsMaterialsPanel(bpy.types.Panel):
 
 class TextureToolsImageSelectionPanel(bpy.types.Panel):
     bl_space_type = "IMAGE_EDITOR"
-    bl_region_type = "TOOLS"
+    bl_region_type = "UI"
     bl_label = "Image Selection"
-    bl_category = "Texture Tools"
+    bl_category = "Image Edit"
 
     def draw(self, context):
         layout = self.layout
