@@ -26,7 +26,7 @@ bl_info = {
     "location": "Image Editor > Tool Shelf > Image Edit",
     "documentation": "http://blenderartists.org/forum/"
     "showthread.php?364409-WIP-Seamless-texture-patching-addon",
-    "version": (0, 1, 9),
+    "version": (0, 1, 10),
     "blender": (2, 80, 0),
 }
 
@@ -357,16 +357,16 @@ class GimpSeamlessOperator(GeneralImageOperator):
         imask[imask < 0] = 0
 
         # copy the data into the three remaining corners
-        imask[0 : self.ys / 2 + 1, self.xs / 2 : self.xs - 1] = numpy.fliplr(
-            imask[0 : self.ys / 2 + 1, 0 : self.xs / 2 - 1]
+        imask[0 : self.ys // 2 + 1, self.xs // 2 : self.xs - 1] = numpy.fliplr(
+            imask[0 : self.ys // 2 + 1, 0 : self.xs // 2 - 1]
         )
-        imask[-self.ys / 2 : self.ys, 0 : self.xs / 2] = numpy.flipud(
-            imask[0 : self.ys / 2, 0 : self.xs / 2]
+        imask[-self.ys // 2 : self.ys, 0 : self.xs // 2] = numpy.flipud(
+            imask[0 : self.ys // 2, 0 : self.xs // 2]
         )
-        imask[-self.ys / 2 : self.ys, self.xs / 2 : self.xs - 1] = numpy.flipud(
-            imask[0 : self.ys / 2, self.xs / 2 : self.xs - 1]
+        imask[-self.ys // 2 : self.ys, self.xs // 2 : self.xs - 1] = numpy.flipud(
+            imask[0 : self.ys // 2, self.xs // 2 : self.xs - 1]
         )
-        imask[self.ys / 2, :] = imask[self.ys / 2 - 1, :]  # center line
+        imask[self.ys // 2, :] = imask[self.ys // 2 - 1, :]  # center line
 
         # apply mask
         amask = numpy.zeros(self.pixels.shape, dtype=float)
@@ -474,13 +474,13 @@ class SeamlessOperator(GeneralImageOperator):
         margin = step * self.seamless_lines - self.seamless_overlap
 
         # erase the data from the are we are about to fill with patches
-        self.pixels[int(self.ys / 2 - margin / 2) : int(self.ys / 2 + margin / 2), :, :] = [
+        self.pixels[int(self.ys // 2 - margin // 2) : int(self.ys // 2 + margin // 2), :, :] = [
             0.0,
             0.0,
             0.0,
             0.0,
         ]
-        self.pixels[:, int(self.xs / 2) - margin / 2 : int(self.xs / 2) + margin / 2, :] = [
+        self.pixels[:, int(self.xs // 2) - margin // 2 : int(self.xs // 2) + margin // 2, :] = [
             0.0,
             0.0,
             0.0,
@@ -491,8 +491,8 @@ class SeamlessOperator(GeneralImageOperator):
         ymax = int(self.ys - 1)
 
         # reconstruct the missing area with patching
-        xstart = int(self.xs / 2) - margin / 2 - self.seamless_overlap
-        ystart = int(self.ys / 2) - margin / 2 - self.seamless_overlap
+        xstart = int(self.xs / 2) - margin // 2 - self.seamless_overlap
+        ystart = int(self.ys / 2) - margin // 2 - self.seamless_overlap
 
         for _ in range(1):
             # horizontal
