@@ -1,0 +1,3 @@
+[submodule "bpy_amb"]
+	path = bpy_amb
+	url = https://github.com/amb/bpy_amb.git
