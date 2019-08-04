@@ -1,21 +1,20 @@
-# -*- coding: utf-8 -*-
-"""
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+# -*- coding:utf-8 -*-
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-Created Date: Monday, July 8th 2019, 8:27:07 am
-Copyright: Tommi Hyppänen
-"""
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# Created Date: Monday, July 8th 2019, 8:27:07 am
+# Copyright: Tommi Hyppänen
 
 
 bl_info = {
@@ -26,13 +25,15 @@ bl_info = {
     "location": "Image Editor > Side Panel > Image",
     "documentation": "http://blenderartists.org/forum/"
     "showthread.php?364409-WIP-Seamless-texture-patching-addon",
-    "version": (0, 1, 12),
+    "version": (0, 1, 15),
     "blender": (2, 80, 0),
 }
 
 import numpy
 import bpy
-
+from . import image_ops
+import importlib
+importlib.reload(image_ops)
 
 def compute_shading():
     tri_intersect = """
@@ -922,3 +923,27 @@ def old():
     def unregister():
         for entry in regclasses:
             bpy.utils.unregister_class(entry)
+
+
+class Test_OP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["foo"] = bpy.props.IntProperty(name="Foo", default=1, min=1, max=100)
+
+        self.prefix = "test"
+        self.info = "Testing"
+        self.category = "General"
+
+        def _pl(self, image, context):
+            print("test op activated")
+            image += 0.2
+
+        self.payload = _pl
+
+
+# Detect all relevant classes in namespace
+load_these = []
+for name, obj in locals().copy().items():
+    if hasattr(obj, "__bases__") and obj.__bases__[0].__name__ == "ImageOperatorGenerator":
+        load_these.append(obj)
+
+register, unregister = image_ops.create(load_these)
