@@ -20,13 +20,11 @@
 import bpy  # noqa:F401
 import numpy as np
 
-from .bpy_amb import bbmesh as abm  # noqa:F401
 from .bpy_amb import master_ops
-
+from .bpy_amb import utils
 import importlib
-
-importlib.reload(abm)
 importlib.reload(master_ops)
+importlib.reload(utils)
 
 # # example for create()
 # # --- Detect all relevant classes in namespace
@@ -48,7 +46,12 @@ def get_teximage(context):
         return None
 
 
-def create(load_these):
+def create(lc):
+    load_these = []
+    for name, obj in lc.copy().items():
+        if hasattr(obj, "__bases__") and obj.__bases__[0].__name__ == "ImageOperatorGenerator":
+            load_these.append(obj)
+
     pbuild = master_ops.PanelBuilder(
         "texture_tools", load_these, "OBUILD", "IMAGE_EDITOR", "UI", "Image"
     )
@@ -56,18 +59,15 @@ def create(load_these):
 
 
 class ImageOperator(master_ops.MacroOperator):
-    # @classmethod
-    # def poll(cls, context):
-    #     return context.active_object is not None
-
-    def payload(self, mesh, context):
+    def payload(self, image, context):
         pass
 
     def execute(self, context):
 
         image = get_teximage(bpy.context)
         sourcepixels = np.float32(np.array(image.pixels).reshape(image.size[0], image.size[1], 4))
-        self.payload(sourcepixels, context)
+        with utils.Profile_this():
+            sourcepixels = self.payload(sourcepixels, context)
         image.pixels = sourcepixels.reshape((image.size[0] * image.size[1] * 4,))
 
         return {"FINISHED"}

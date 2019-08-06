@@ -31,9 +31,11 @@ bl_info = {
 
 import numpy
 import bpy
+import copy
 from . import image_ops
 import importlib
 importlib.reload(image_ops)
+
 
 def compute_shading():
     tri_intersect = """
@@ -155,6 +157,153 @@ def compute_shading():
     print("fin.")
 
 
+class ImageOperations:
+    """ Takes in RGBA """
+
+    def __init__(self, image):
+        # self.pixels = numpy.copy(image)
+        self.pixels = image
+
+    def copy(self):
+        n = copy.copy(self)
+        n.pixels = numpy.copy(self.pixels)
+        return self
+
+    def convolution(self, intens, sfil):
+        # source, intensity, convolution matrix
+        ssp = self.pixels
+        tpx = numpy.zeros(ssp.shape, dtype=float)
+        tpx[:, :, 3] = 1.0
+        ystep = int(4 * ssp.shape[1])
+        norms = 0
+        for y in range(sfil.shape[0]):
+            for x in range(sfil.shape[1]):
+                tpx += (
+                    numpy.roll(
+                        ssp, (x - int(sfil.shape[1] / 2)) * 4 + (y - int(sfil.shape[0] / 2)) * ystep
+                    )
+                    * sfil[y, x]
+                )
+                norms += sfil[y, x]
+        if norms > 0:
+            tpx /= norms
+        return ssp + (tpx - ssp) * intens
+
+    def blur(self, s, intensity):
+        self.pixels = self.convolution(intensity, numpy.ones((1 + s * 2, 1 + s * 2), dtype=float))
+        return self
+
+    def sharpen(self, intensity):
+        self.pixels = self.convolution(
+            intensity, numpy.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+        )
+        return self
+
+    def normalize(self):
+        t = self.pixels - numpy.min(self.pixels)
+        self.pixels = t / numpy.max(t)
+        return self
+
+    def sobel_x(self, intensity):
+        gx = numpy.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
+        self.pixels = self.convolution(intensity, gx)
+        return self
+
+    def sobel_y(self, intensity):
+        gy = numpy.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
+        self.pixels = self.convolution(intensity, gy)
+        return self
+
+    def edgedetect(self, s, intensity):
+        self.pixels = (
+            self.convolution(intensity, numpy.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]]))
+        ) * 0.5 + 0.5
+        return self
+
+    def gaussian(self, s, intensity):
+        fil = numpy.ones((1 + s * 2, 1 + s * 2), dtype=float)
+        xs = int(fil.shape[1] / 2)
+        ys = int(fil.shape[0] / 2)
+        ro = 5.0 ** 2
+        for y in range(0, fil.shape[0]):
+            for x in range(0, fil.shape[1]):
+                fil[y, x] = (1.0 / numpy.sqrt(2 * numpy.pi * ro)) * (
+                    2.71828 ** (-((x - xs) ** 2 + (y - ys) ** 2) / (2 * ro))
+                )
+        self.pixels = self.convolution(intensity, fil)
+        return self
+
+    def fast_blur(self, s):
+        d = 2 ** s
+        tpx = self.pixels
+        ystep = tpx.shape[1]
+        while d > 1:
+            tpx = (tpx * 2 + numpy.roll(tpx, -d * 4) + numpy.roll(tpx, d * 4)) / 4
+            tpx = (
+                tpx * 2 + numpy.roll(tpx, -d * (ystep * 4)) + numpy.roll(tpx, d * (ystep * 4))
+            ) / 4
+            d = int(d / 2)
+        self.pixels = tpx
+        return self
+
+    def normals_simple(self, intensity):
+        self.grayscale()
+        sshape = self.pixels.shape
+
+        px = self.copy().sobel_x(1.0).pixels
+        px[:, :, 2] = px[:, :, 2] * intensity
+        px[:, :, 1] = 0
+        px[:, :, 0] = 1
+
+        py = self.sobel_y(1.0).pixels
+        py[:, :, 2] = py[:, :, 2] * intensity
+        py[:, :, 1] = 1
+        py[:, :, 0] = 0
+
+        arr = numpy.cross(px[:, :, :3], py[:, :, :3])
+
+        # vec *= 1/len(vec)
+        m = 1.0 / numpy.sqrt(arr[:, :, 0] ** 2 + arr[:, :, 1] ** 2 + arr[:, :, 2] ** 2)
+        arr[..., 0] *= m
+        arr[..., 1] *= m
+        arr[..., 2] *= m
+        vectors = arr
+
+        retarr = numpy.zeros(sshape)
+        retarr[:, :, 0] = 0.5 - vectors[:, :, 0]
+        retarr[:, :, 1] = vectors[:, :, 1] + 0.5
+        retarr[:, :, 2] = vectors[:, :, 2]
+        retarr[:, :, 3] = 1.0
+        self.pixels = retarr
+        return self
+
+    def sobel(self, s, intensity):
+        retarr = numpy.zeros(self.pixels.shape)
+        retarr = self.sobel_x(1.0)
+        retarr += self.sobel_y(1.0)
+        retarr = (retarr * intensity) * 0.5 + 0.5
+        retarr[..., 3] = 1.0
+        self.pixels = retarr
+        return self
+
+    def separate_values(self, s, intensity):
+        retarr = numpy.copy(self.pixels)
+        retarr[..., :3] = self.pixels[..., :3] ** intensity
+        self.pixels = retarr
+        return self
+
+    def grayscale(self):
+        ssp = self.pixels
+        r, g, b = ssp[:, :, 0], ssp[:, :, 1], ssp[:, :, 2]
+        gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
+        retarr = numpy.copy(self.pixels)
+        retarr[..., 0] = gray
+        retarr[..., 1] = gray
+        retarr[..., 2] = gray
+        self.pixels = retarr
+        return self
+
+
 def old():
     class GeneralImageOperator(bpy.types.Operator):
         def init_images(self, context):
@@ -210,202 +359,6 @@ def old():
             self.image.pixels = self.pixels.flatten()
             bpy.ops.image.invert(invert_r=False, invert_g=False, invert_b=False, invert_a=False)
 
-    class ImageOperations:
-        """ Takes in RGBA """
-
-        def __init__(self, image):
-            # self.pixels = numpy.copy(image)
-            self.sourcepixels = image
-
-        def convolution(self, intens, sfil):
-            # source, intensity, convolution matrix
-            ssp = self.sourcepixels
-            tpx = numpy.zeros(ssp.shape, dtype=float)
-            tpx[:, :, 3] = 1.0
-            ystep = int(4 * ssp.shape[1])
-            norms = 0
-            for y in range(sfil.shape[0]):
-                for x in range(sfil.shape[1]):
-                    tpx += (
-                        numpy.roll(
-                            ssp,
-                            (x - int(sfil.shape[1] / 2)) * 4 + (y - int(sfil.shape[0] / 2)) * ystep,
-                        )
-                        * sfil[y, x]
-                    )
-                    norms += sfil[y, x]
-            if norms > 0:
-                tpx /= norms
-            return ssp + (tpx - ssp) * intens
-
-        def normalize_vector(self, arr):
-            # vec *= 1/len(vec)
-            m = 1.0 / numpy.sqrt(arr[:, :, 0] ** 2 + arr[:, :, 1] ** 2 + arr[:, :, 2] ** 2)
-            arr[..., 0] *= m
-            arr[..., 1] *= m
-            arr[..., 2] *= m
-            return arr
-
-        def blur(self, s, intensity):
-            return self.convolution(intensity, numpy.ones((1 + s * 2, 1 + s * 2), dtype=float))
-
-        def sharpen(self, s, intensity):
-            return self.convolution(
-                intensity, numpy.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-            )
-
-        def normalize(self):
-            t = self.sourcepixels - numpy.min(self.sourcepixels)
-            return t / numpy.max(t)
-
-        def sobel_x(self, intensity):
-            gx = numpy.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
-            return self.convolution(intensity, gx)
-
-        def sobel_y(self, intensity):
-            gy = numpy.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
-            return self.convolution(intensity, gy)
-
-        # noinspection PyMethodFirstArgAssignment
-        def box_clamp(self, x1, y1, x2, y2, minx, miny, maxx, maxy):
-            if x1 < minx:
-                x1 = minx
-            if x2 > maxx:
-                x2 = maxx
-            if y1 < miny:
-                y1 = miny
-            if y2 > maxy:
-                y2 = maxy
-            return x1, y1, x2, y2
-
-        def edgedetect(self, s, intensity):
-            return (
-                self.convolution(intensity, numpy.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]]))
-            ) * 0.5 + 0.5
-
-        def gaussian(self, s, intensity):
-            fil = numpy.ones((1 + s * 2, 1 + s * 2), dtype=float)
-            xs = int(fil.shape[1] / 2)
-            ys = int(fil.shape[0] / 2)
-            ro = 5.0 ** 2
-            for y in range(0, fil.shape[0]):
-                for x in range(0, fil.shape[1]):
-                    fil[y, x] = (1.0 / numpy.sqrt(2 * numpy.pi * ro)) * (
-                        2.71828 ** (-((x - xs) ** 2 + (y - ys) ** 2) / (2 * ro))
-                    )
-            return self.convolution(intensity, fil)
-
-        def fast_gaussian(self, s, intensity):
-            d = 2 ** s
-            tpx = self.sourcepixels
-            ystep = tpx.shape[1]
-            while d > 1:
-                tpx = (tpx * 2 + numpy.roll(tpx, -d * 4) + numpy.roll(tpx, d * 4)) / 4
-                tpx = (
-                    tpx * 2 + numpy.roll(tpx, -d * (ystep * 4)) + numpy.roll(tpx, d * (ystep * 4))
-                ) / 4
-                d = int(d / 2)
-            return tpx
-
-        def normals_simple(self, s, intensity):
-            gradx = self.sobel_x(1.0)
-            gradx[:, :, 2] = (gradx[:, :, 0] + gradx[:, :, 1] + gradx[:, :, 2]) * intensity / 3
-            gradx[:, :, 1] = 0
-            gradx[:, :, 0] = 1
-
-            grady = self.sobel_y(1.0)
-            grady[:, :, 2] = (grady[:, :, 0] + grady[:, :, 1] + grady[:, :, 2]) * intensity / 3
-            grady[:, :, 1] = 1
-            grady[:, :, 0] = 0
-
-            vectors = self.normalize_vector(numpy.cross(gradx[:, :, :3], grady[:, :, :3]))
-
-            retarr = numpy.zeros(self.sourcepixels.shape)
-            retarr[:, :, 0] = 0.5 - vectors[:, :, 0]
-            retarr[:, :, 1] = vectors[:, :, 1] + 0.5
-            retarr[:, :, 2] = vectors[:, :, 2]
-            retarr[:, :, 3] = 1.0
-            return retarr
-
-        def sobel(self, s, intensity):
-            retarr = numpy.zeros(self.sourcepixels.shape)
-            retarr = self.sobel_x(1.0)
-            retarr += self.sobel_y(1.0)
-            retarr = (retarr * intensity) * 0.5 + 0.5
-            retarr[..., 3] = 1.0
-            return retarr
-
-        def poisson_blending(self, s, intensity):
-            b = numpy.copy(self.sourcepixels)
-            b[1:-1, 1:-1] = [0, 0, 0, 0]
-            b[-1, :] = b[0, :] - b[-1, :]
-            b[0, :] = [0, 0, 0, 0]
-            b[:, -1] = b[:, 0] - b[:, -1]
-            b[:, 0] = [0, 0, 0, 0]
-
-            u = numpy.copy(b)
-            u[1:-1, 1:-1] = (numpy.zeros(b.shape))[1:-1, 1:-1]
-
-            # solve poisson
-            for i in range(200):
-                u[1:-1, 1:-1] = (
-                    u[0:-2, 1:-1] + u[2:, 1:-1] + u[1:-1, 0:-2] + u[1:-1, 2:] + b[1:-1, 1:-1]
-                ) / 4
-
-            return u + self.sourcepixels
-
-        def separate_values(self, s, intensity):
-            retarr = numpy.copy(self.sourcepixels)
-            retarr[..., :3] = self.sourcepixels[..., :3] ** intensity
-            return retarr
-
-        def grayscale(self, s, intensity):
-            ssp = self.sourcepixels
-            r, g, b = ssp[:, :, 0], ssp[:, :, 1], ssp[:, :, 2]
-            gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
-            retarr = numpy.copy(self.sourcepixels)
-            retarr[..., 0] = gray
-            retarr[..., 1] = gray
-            retarr[..., 2] = gray
-            return retarr
-
-        def bilateral(self, s, intensity):
-            ssp = self.sourcepixels
-            pix = numpy.copy(ssp)
-            ystep = ssp.shape[1] * 4
-            nr = numpy.roll
-
-            b = numpy.abs(self.sobel_x(1.0))
-            b += numpy.abs(self.sobel_y(1.0))
-            # smooth
-            for _ in range(3):
-                b = (nr(b, 4) + nr(b, -4) + nr(b, ystep) + nr(b, -ystep) + b) / 5
-
-            b **= intensity
-            b[..., 3] = 1.0
-
-            ssx = ssp.shape[1]
-            ssy = ssp.shape[0]
-            for y in range(0, ssy):
-                for x in range(0, ssx):
-                    m = numpy.sum(b[y, x][:3]) / 3
-                    si = 1 + int(numpy.abs((1 - m) * 2 * s))
-                    a = numpy.array(ssp[y, x], dtype=float)
-
-                    x1, y1, x2, y2 = self.box_clamp(
-                        x - si, y - si, x + si + 1, y + si + 1, 0, 0, ssx - 1, ssy - 1
-                    )
-                    if x1 < x2 and y1 < y2:
-                        # blockmul =  numpy.abs(1-b[y1:y2, x1:x2])
-                        block = ssp[y1:y2, x1:x2]  # * blockmul
-                        a[0] = numpy.median(block[..., 0])
-                        a[1] = numpy.median(block[..., 1])
-                        a[2] = numpy.median(block[..., 2])
-
-                    pix[y, x] = ssp[y, x] * m + a * (1 - m)
-            pix[..., 3] = 1.0
-            return pix
-
     class ConvolutionsOperator(GeneralImageOperator):
         """Image filter operator"""
 
@@ -439,68 +392,93 @@ def old():
 
             return {"FINISHED"}
 
-    class GimpSeamlessOperator(GeneralImageOperator):
-        # TODO: the smoothing is not complete, it goes only one way
-        """Image seamless generator operator"""
-        bl_idname = "uv.gimp_seamless_operator"
-        bl_label = "Gimp-style Image Seamless Operator"
-
-        def gimpify(self):
-            self.pixels = numpy.copy(self.sourcepixels)
-            self.sourcepixels = numpy.roll(
-                self.sourcepixels, self.xs * 2 + self.xs * 4 * int(self.ys / 2)
-            )
-
-            # margin = self.seamless_gimpmargin
-            # if margin>self.xs:
-            #     margin = int(self.xs)
-
-            sxs = int(self.xs / 2)
-            sys = int(self.ys / 2)
-
-            # generate the mask
-            print(self.pixels.shape)
-            imask = numpy.zeros((self.pixels.shape[0], self.pixels.shape[1]), dtype=float)
-            for y in range(0, sys):
-                zy0 = y / sys + 0.001
-                zy1 = 1 - y / sys + 0.001
-                for x in range(0, sxs):
-                    zx0 = 1 - x / sxs + 0.001
-                    imask[y, x] = 1 - zy0 / zx0
-                    zx1 = x / sxs + 0.001
-                    imask[y, x] = numpy.maximum((1 - zx1 / zy1), imask[y, x])
-
-            imask[imask < 0] = 0
-
-            # copy the data into the three remaining corners
-            imask[0 : self.ys // 2 + 1, self.xs // 2 : self.xs - 1] = numpy.fliplr(
-                imask[0 : self.ys // 2 + 1, 0 : self.xs // 2 - 1]
-            )
-            imask[-self.ys // 2 : self.ys, 0 : self.xs // 2] = numpy.flipud(
-                imask[0 : self.ys // 2, 0 : self.xs // 2]
-            )
-            imask[-self.ys // 2 : self.ys, self.xs // 2 : self.xs - 1] = numpy.flipud(
-                imask[0 : self.ys // 2, self.xs // 2 : self.xs - 1]
-            )
-            imask[self.ys // 2, :] = imask[self.ys // 2 - 1, :]  # center line
-
-            # apply mask
-            amask = numpy.zeros(self.pixels.shape, dtype=float)
-            amask[:, :, 0] = imask
-            amask[:, :, 1] = imask
-            amask[:, :, 2] = imask
-            amask[:, :, 3] = 1.0
-
-            self.pixels = (
-                amask * self.sourcepixels + (numpy.ones(amask.shape) - amask) * self.pixels
-            )
-            # self.pixels = amask
+    class MaterialTextureGenerator(bpy.types.Operator):
+        bl_idname = "uv.material_texgen"
+        bl_label = "Generate textures for a material"
 
         def execute(self, context):
-            self.init_images(context)
-            self.seamless_gimpmargin = context.scene.seamless_gimpmargin
-            self.gimpify()
-            self.finish_images(context)
+            self.input_material = context.scene.seamless_input_material
+            self.input_image = bpy.data.images[context.scene.seamless_input_image]
+
+            self.xs = self.input_image.size[0]
+            self.ys = self.input_image.size[1]
+
+            print("Assign data")
+            print(repr(self.input_material))
+            mat = bpy.data.materials[self.input_material]
+            textures = []
+            for t in mat.texture_slots.values():
+                if t:
+                    textures.append(t)
+                    print(t)
+            print(textures)
+            matn = self.input_material
+
+            difftex = matn + "_t_d"
+            normtex = matn + "_t_n"
+            spectex = matn + "_t_s"
+
+            diffimg = matn + "_d"
+            normimg = matn + "_n"
+            specimg = matn + "_s"
+
+            bpy.data.textures.new(difftex, "IMAGE")
+            bpy.data.textures.new(normtex, "IMAGE")
+            bpy.data.textures.new(spectex, "IMAGE")
+
+            # GENERATE DIFFUSE
+            bpy.data.textures[difftex].image = bpy.data.images.new(
+                diffimg, width=self.xs, height=self.ys
+            )
+            sourcepixels = numpy.array(self.input_image.pixels).reshape((self.ys, self.xs, 4))
+            bpy.data.textures[difftex].image.pixels = sourcepixels.flatten()
+
+            # GENERATE NORMALS
+            bpy.data.textures[normtex].image = bpy.data.images.new(
+                normimg, width=self.xs, height=self.ys
+            )
+            bpy.data.textures[normtex].use_normal_map = True
+
+            # copy image data into much more performant numpy arrays
+            pixels = ImageOperations(
+                numpy.array(self.input_image.pixels).reshape((self.ys, self.xs, 4))
+            ).normals_simple(1, 1.0)
+
+            # assign pixels
+            bpy.data.textures[normtex].image.pixels = pixels.flatten()
+
+            # GENERATE SPEC
+            bpy.data.textures[spectex].image = bpy.data.images.new(
+                specimg, width=self.xs, height=self.ys
+            )
+
+            ssp = numpy.array(self.input_image.pixels).reshape((self.ys, self.xs, 4))
+            pixels = numpy.ones((self.ys, self.xs, 4))
+            r, g, b = ssp[:, :, 0], ssp[:, :, 1], ssp[:, :, 2]
+            gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
+            gray **= 4
+            gray -= numpy.min(gray)
+            gray /= numpy.max(gray)
+            pixels[..., 0] = gray
+            pixels[..., 1] = gray
+            pixels[..., 2] = gray
+            bpy.data.textures[spectex].image.pixels = pixels.flatten()
+
+            bpy.ops.image.invert(invert_r=False, invert_g=False, invert_b=False, invert_a=False)
+
+            bpy.data.materials[matn].specular_hardness = 30
+            bpy.data.materials[matn].specular_intensity = 0
+            for i in range(3):
+                bpy.data.materials[matn].texture_slots.create(i)
+            bpy.data.materials[matn].texture_slots[0].texture = bpy.data.textures[difftex]
+            bpy.data.materials[matn].texture_slots[1].texture = bpy.data.textures[normtex]
+            bpy.data.materials[matn].texture_slots[1].use_map_color_diffuse = False
+            bpy.data.materials[matn].texture_slots[1].use_map_normal = True
+            bpy.data.materials[matn].texture_slots[1].normal_factor = 0.5
+            bpy.data.materials[matn].texture_slots[2].texture = bpy.data.textures[spectex]
+            bpy.data.materials[matn].texture_slots[2].use_map_color_diffuse = False
+            bpy.data.materials[matn].texture_slots[2].texture.use_alpha = False
+            bpy.data.materials[matn].texture_slots[2].use_map_specular = True
 
             return {"FINISHED"}
 
@@ -647,303 +625,291 @@ def old():
 
             return {"FINISHED"}
 
-    class MaterialTextureGenerator(bpy.types.Operator):
-        bl_idname = "uv.material_texgen"
-        bl_label = "Generate textures for a material"
+        class TextureToolsPanel(bpy.types.Panel):
+            bl_space_type = "IMAGE_EDITOR"
+            bl_region_type = "UI"
+            bl_label = "Seamless Patching"
+            bl_category = "Image"
 
-        def execute(self, context):
-            self.input_material = context.scene.seamless_input_material
-            self.input_image = bpy.data.images[context.scene.seamless_input_image]
+            def draw(self, context):
+                layout = self.layout
 
-            self.xs = self.input_image.size[0]
-            self.ys = self.input_image.size[1]
+                row = layout.row()
+                row.label(text="Patched:")
 
-            print("Assign data")
-            print(repr(self.input_material))
-            mat = bpy.data.materials[self.input_material]
-            textures = []
-            for t in mat.texture_slots.values():
-                if t:
-                    textures.append(t)
-                    print(t)
-            print(textures)
-            matn = self.input_material
+                row = layout.row()
+                row.prop(context.scene, "seamless_samples")
+                row.prop(context.scene, "seamless_window")
 
-            difftex = matn + "_t_d"
-            normtex = matn + "_t_n"
-            spectex = matn + "_t_s"
+                row = layout.row()
+                row.prop(context.scene, "seamless_overlap")
+                row.prop(context.scene, "seamless_lines")
 
-            diffimg = matn + "_d"
-            normimg = matn + "_n"
-            specimg = matn + "_s"
+                row = layout.row()
+                row.prop(context.scene, "seamless_smoothing")
 
-            bpy.data.textures.new(difftex, "IMAGE")
-            bpy.data.textures.new(normtex, "IMAGE")
-            bpy.data.textures.new(spectex, "IMAGE")
+                row = layout.row()
+                row.operator(SeamlessOperator.bl_idname, text="Make seamless (patches)")
 
-            # GENERATE DIFFUSE
-            bpy.data.textures[difftex].image = bpy.data.images.new(
-                diffimg, width=self.xs, height=self.ys
+                row = layout.row()
+                row.label(text="Fast and simple:")
+
+                # row = layout.row()
+                # row.prop(context.scene, "seamless_gimpmargin")
+
+                row = layout.row()
+                row.operator(GimpSeamlessOperator.bl_idname, text="Make seamless (fast)")
+
+        class TextureToolsFiltersPanel(bpy.types.Panel):
+            bl_space_type = "IMAGE_EDITOR"
+            bl_region_type = "UI"
+            bl_label = "Image Filters"
+            bl_category = "Image"
+
+            def draw(self, context):
+                layout = self.layout
+                row = layout.row()
+                row.prop(context.scene, "seamless_filter_type")
+
+                row = layout.row()
+                row.prop(context.scene, "seamless_filter_size")
+                row.prop(context.scene, "seamless_filter_intensity")
+
+                row = layout.row()
+                row.operator(ConvolutionsOperator.bl_idname, text="Filter")
+
+        class TextureToolsMaterialsPanel(bpy.types.Panel):
+            bl_space_type = "IMAGE_EDITOR"
+            bl_region_type = "UI"
+            bl_label = "Material Tools"
+            bl_category = "Image"
+
+            def draw(self, context):
+                layout = self.layout
+                # row = layout.row()
+                # row.label("In a material world.")
+
+                row = layout.row()
+                row.prop(context.scene, "seamless_input_material")
+
+                row = layout.row()
+                row.operator(MaterialTextureGenerator.bl_idname, text="Generate textures")
+
+        class TextureToolsImageSelectionPanel(bpy.types.Panel):
+            bl_space_type = "IMAGE_EDITOR"
+            bl_region_type = "UI"
+            bl_label = "Image Selection"
+            bl_category = "Image"
+
+            def draw(self, context):
+                layout = self.layout
+
+                row = layout.row()
+                row.prop(context.scene, "seamless_input_image")
+
+                row = layout.row()
+                row.prop(context.scene, "seamless_generated_name")
+
+                row = layout.row()
+                row.prop(context.scene, "seamless_powersoftwo")
+
+        # ### INITIALIZATION
+
+        # register classes
+        regclasses = [
+            SeamlessOperator,
+            GimpSeamlessOperator,
+            ConvolutionsOperator,
+            TextureToolsImageSelectionPanel,
+            TextureToolsPanel,
+            TextureToolsFiltersPanel,
+            TextureToolsMaterialsPanel,
+            MaterialTextureGenerator,
+        ]
+
+        def register():
+            # SEAMLESS PANEL
+            bpy.types.Scene.seamless_samples = bpy.props.IntProperty(
+                name="Samples", default=100, min=1, max=10000
             )
-            sourcepixels = numpy.array(self.input_image.pixels).reshape((self.ys, self.xs, 4))
-            bpy.data.textures[difftex].image.pixels = sourcepixels.flatten()
-
-            # GENERATE NORMALS
-            bpy.data.textures[normtex].image = bpy.data.images.new(
-                normimg, width=self.xs, height=self.ys
+            bpy.types.Scene.seamless_window = bpy.props.IntProperty(
+                name="Window", default=32, min=2, max=128
             )
-            bpy.data.textures[normtex].use_normal_map = True
+            bpy.types.Scene.seamless_overlap = bpy.props.IntProperty(
+                name="Overlap", default=8, min=1, max=64
+            )
+            bpy.types.Scene.seamless_lines = bpy.props.IntProperty(
+                name="Lines", default=2, min=1, max=16
+            )
+            bpy.types.Scene.seamless_gimpmargin = bpy.props.IntProperty(
+                name="Blending margin", default=200, min=1, max=1000
+            )
+            bpy.types.Scene.seamless_smoothing = bpy.props.BoolProperty(name="Patch smoothing")
 
-            # copy image data into much more performant numpy arrays
-            pixels = ImageOperations(
-                numpy.array(self.input_image.pixels).reshape((self.ys, self.xs, 4))
-            ).normals_simple(1, 1.0)
+            available_objects = []
 
-            # assign pixels
-            bpy.data.textures[normtex].image.pixels = pixels.flatten()
+            def availableObjects(self, context):
+                available_objects.clear()
+                for im in bpy.data.images:
+                    name = im.name
+                    available_objects.append((name, name, name))
+                return available_objects
 
-            # GENERATE SPEC
-            bpy.data.textures[spectex].image = bpy.data.images.new(
-                specimg, width=self.xs, height=self.ys
+            # IMAGE SELECTION & TOOLS
+            bpy.types.Scene.seamless_generated_name = bpy.props.StringProperty(
+                name="Output image", default="generated"
+            )
+            bpy.types.Scene.seamless_input_image = bpy.props.EnumProperty(
+                name="Input image", items=availableObjects
+            )
+            bpy.types.Scene.seamless_powersoftwo = bpy.props.BoolProperty(
+                name="Crop to powers of two"
             )
 
-            ssp = numpy.array(self.input_image.pixels).reshape((self.ys, self.xs, 4))
-            pixels = numpy.ones((self.ys, self.xs, 4))
-            r, g, b = ssp[:, :, 0], ssp[:, :, 1], ssp[:, :, 2]
-            gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
-            gray **= 4
-            gray -= numpy.min(gray)
-            gray /= numpy.max(gray)
-            pixels[..., 0] = gray
-            pixels[..., 1] = gray
-            pixels[..., 2] = gray
-            bpy.data.textures[spectex].image.pixels = pixels.flatten()
+            # FILTER PANEL
+            bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(
+                name="Filter type",
+                items=[
+                    ("BLUR", "Box blur", "", 1),
+                    ("SHARPEN", "Sharpen", "", 2),
+                    ("EDGEDETECT", "Edge detect", "", 3),
+                    ("EMBOSS", "Emboss", "", 4),
+                    # ("GAUSSIAN", "Gaussian blur ro:5", "", 5),
+                    ("FASTGAUSSIAN", "Fast gaussian", "", 6),
+                    ("SOBEL", "Sobel", "", 7),
+                    ("NORMALSSIMPLE", "Normal map: simple", "", 8),
+                    ("SEPARATEVALUES", "Emphasize whites or blacks", "", 9),
+                    # ("POISSONTILES", "Blend image edges", "", 10),
+                    # ("BILATERAL", "Bilateral blur", "", 11),
+                    ("GRAYSCALE", "Grayscale", "", 12),
+                ],
+            )
+            bpy.types.Scene.seamless_filter_size = bpy.props.IntProperty(
+                name="Size", default=1, min=1, max=9
+            )
+            bpy.types.Scene.seamless_filter_intensity = bpy.props.FloatProperty(
+                name="Intensity", default=1.0, min=0.0, max=3.0
+            )
 
-            bpy.ops.image.invert(invert_r=False, invert_g=False, invert_b=False, invert_a=False)
+            # MATERIALS PANEL
+            available_materials = []
 
-            bpy.data.materials[matn].specular_hardness = 30
-            bpy.data.materials[matn].specular_intensity = 0
-            for i in range(3):
-                bpy.data.materials[matn].texture_slots.create(i)
-            bpy.data.materials[matn].texture_slots[0].texture = bpy.data.textures[difftex]
-            bpy.data.materials[matn].texture_slots[1].texture = bpy.data.textures[normtex]
-            bpy.data.materials[matn].texture_slots[1].use_map_color_diffuse = False
-            bpy.data.materials[matn].texture_slots[1].use_map_normal = True
-            bpy.data.materials[matn].texture_slots[1].normal_factor = 0.5
-            bpy.data.materials[matn].texture_slots[2].texture = bpy.data.textures[spectex]
-            bpy.data.materials[matn].texture_slots[2].use_map_color_diffuse = False
-            bpy.data.materials[matn].texture_slots[2].texture.use_alpha = False
-            bpy.data.materials[matn].texture_slots[2].use_map_specular = True
+            def availableMaterials(self, context):
+                available_materials.clear()
+                for im in bpy.data.materials:
+                    name = im.name
+                    available_materials.append((name, name, name))
+                return available_materials
 
-            return {"FINISHED"}
+            bpy.types.Scene.seamless_input_material = bpy.props.EnumProperty(
+                name="Material", items=availableMaterials
+            )
 
-            # ### USER INTERFACE
+            for entry in regclasses:
+                bpy.utils.register_class(entry)
 
-    class TextureToolsPanel(bpy.types.Panel):
-        bl_space_type = "IMAGE_EDITOR"
-        bl_region_type = "UI"
-        bl_label = "Seamless Patching"
-        bl_category = "Image"
-
-        def draw(self, context):
-            layout = self.layout
-
-            row = layout.row()
-            row.label(text="Patched:")
-
-            row = layout.row()
-            row.prop(context.scene, "seamless_samples")
-            row.prop(context.scene, "seamless_window")
-
-            row = layout.row()
-            row.prop(context.scene, "seamless_overlap")
-            row.prop(context.scene, "seamless_lines")
-
-            row = layout.row()
-            row.prop(context.scene, "seamless_smoothing")
-
-            row = layout.row()
-            row.operator(SeamlessOperator.bl_idname, text="Make seamless (patches)")
-
-            row = layout.row()
-            row.label(text="Fast and simple:")
-
-            # row = layout.row()
-            # row.prop(context.scene, "seamless_gimpmargin")
-
-            row = layout.row()
-            row.operator(GimpSeamlessOperator.bl_idname, text="Make seamless (fast)")
-
-    class TextureToolsFiltersPanel(bpy.types.Panel):
-        bl_space_type = "IMAGE_EDITOR"
-        bl_region_type = "UI"
-        bl_label = "Image Filters"
-        bl_category = "Image"
-
-        def draw(self, context):
-            layout = self.layout
-            row = layout.row()
-            row.prop(context.scene, "seamless_filter_type")
-
-            row = layout.row()
-            row.prop(context.scene, "seamless_filter_size")
-            row.prop(context.scene, "seamless_filter_intensity")
-
-            row = layout.row()
-            row.operator(ConvolutionsOperator.bl_idname, text="Filter")
-
-    class TextureToolsMaterialsPanel(bpy.types.Panel):
-        bl_space_type = "IMAGE_EDITOR"
-        bl_region_type = "UI"
-        bl_label = "Material Tools"
-        bl_category = "Image"
-
-        def draw(self, context):
-            layout = self.layout
-            # row = layout.row()
-            # row.label("In a material world.")
-
-            row = layout.row()
-            row.prop(context.scene, "seamless_input_material")
-
-            row = layout.row()
-            row.operator(MaterialTextureGenerator.bl_idname, text="Generate textures")
-
-    class TextureToolsImageSelectionPanel(bpy.types.Panel):
-        bl_space_type = "IMAGE_EDITOR"
-        bl_region_type = "UI"
-        bl_label = "Image Selection"
-        bl_category = "Image"
-
-        def draw(self, context):
-            layout = self.layout
-
-            row = layout.row()
-            row.prop(context.scene, "seamless_input_image")
-
-            row = layout.row()
-            row.prop(context.scene, "seamless_generated_name")
-
-            row = layout.row()
-            row.prop(context.scene, "seamless_powersoftwo")
-
-    # ### INITIALIZATION
-
-    # register classes
-    regclasses = [
-        SeamlessOperator,
-        GimpSeamlessOperator,
-        ConvolutionsOperator,
-        TextureToolsImageSelectionPanel,
-        TextureToolsPanel,
-        TextureToolsFiltersPanel,
-        TextureToolsMaterialsPanel,
-        MaterialTextureGenerator,
-    ]
-
-    def register():
-        # SEAMLESS PANEL
-        bpy.types.Scene.seamless_samples = bpy.props.IntProperty(
-            name="Samples", default=100, min=1, max=10000
-        )
-        bpy.types.Scene.seamless_window = bpy.props.IntProperty(
-            name="Window", default=32, min=2, max=128
-        )
-        bpy.types.Scene.seamless_overlap = bpy.props.IntProperty(
-            name="Overlap", default=8, min=1, max=64
-        )
-        bpy.types.Scene.seamless_lines = bpy.props.IntProperty(
-            name="Lines", default=2, min=1, max=16
-        )
-        bpy.types.Scene.seamless_gimpmargin = bpy.props.IntProperty(
-            name="Blending margin", default=200, min=1, max=1000
-        )
-        bpy.types.Scene.seamless_smoothing = bpy.props.BoolProperty(name="Patch smoothing")
-
-        available_objects = []
-
-        def availableObjects(self, context):
-            available_objects.clear()
-            for im in bpy.data.images:
-                name = im.name
-                available_objects.append((name, name, name))
-            return available_objects
-
-        # IMAGE SELECTION & TOOLS
-        bpy.types.Scene.seamless_generated_name = bpy.props.StringProperty(
-            name="Output image", default="generated"
-        )
-        bpy.types.Scene.seamless_input_image = bpy.props.EnumProperty(
-            name="Input image", items=availableObjects
-        )
-        bpy.types.Scene.seamless_powersoftwo = bpy.props.BoolProperty(name="Crop to powers of two")
-
-        # FILTER PANEL
-        bpy.types.Scene.seamless_filter_type = bpy.props.EnumProperty(
-            name="Filter type",
-            items=[
-                ("BLUR", "Box blur", "", 1),
-                ("SHARPEN", "Sharpen", "", 2),
-                ("EDGEDETECT", "Edge detect", "", 3),
-                ("EMBOSS", "Emboss", "", 4),
-                # ("GAUSSIAN", "Gaussian blur ro:5", "", 5),
-                ("FASTGAUSSIAN", "Fast gaussian", "", 6),
-                ("SOBEL", "Sobel", "", 7),
-                ("NORMALSSIMPLE", "Normal map: simple", "", 8),
-                ("SEPARATEVALUES", "Emphasize whites or blacks", "", 9),
-                # ("POISSONTILES", "Blend image edges", "", 10),
-                # ("BILATERAL", "Bilateral blur", "", 11),
-                ("GRAYSCALE", "Grayscale", "", 12),
-            ],
-        )
-        bpy.types.Scene.seamless_filter_size = bpy.props.IntProperty(
-            name="Size", default=1, min=1, max=9
-        )
-        bpy.types.Scene.seamless_filter_intensity = bpy.props.FloatProperty(
-            name="Intensity", default=1.0, min=0.0, max=3.0
-        )
-
-        # MATERIALS PANEL
-        available_materials = []
-
-        def availableMaterials(self, context):
-            available_materials.clear()
-            for im in bpy.data.materials:
-                name = im.name
-                available_materials.append((name, name, name))
-            return available_materials
-
-        bpy.types.Scene.seamless_input_material = bpy.props.EnumProperty(
-            name="Material", items=availableMaterials
-        )
-
-        for entry in regclasses:
-            bpy.utils.register_class(entry)
-
-    def unregister():
-        for entry in regclasses:
-            bpy.utils.unregister_class(entry)
+        def unregister():
+            for entry in regclasses:
+                bpy.utils.unregister_class(entry)
 
 
-class Test_OP(image_ops.ImageOperatorGenerator):
+class Grayscale_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["foo"] = bpy.props.IntProperty(name="Foo", default=1, min=1, max=100)
-
-        self.prefix = "test"
-        self.info = "Testing"
-        self.category = "General"
-
-        def _pl(self, image, context):
-            print("test op activated")
-            image += 0.2
-
-        self.payload = _pl
+        self.prefix = "grayscale"
+        self.info = "Grayscale from RGB"
+        self.payload = lambda self, image, context: ImageOperations(image).grayscale().pixels
 
 
-# Detect all relevant classes in namespace
-load_these = []
-for name, obj in locals().copy().items():
-    if hasattr(obj, "__bases__") and obj.__bases__[0].__name__ == "ImageOperatorGenerator":
-        load_these.append(obj)
+class Sharpen_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "sharpen"
+        self.info = "Simple sharpen"
+        self.payload = (
+            lambda self, image, context: ImageOperations(image).sharpen(self.intensity).pixels
+        )
 
-register, unregister = image_ops.create(load_these)
+
+class Fastblur_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["steps"] = bpy.props.IntProperty(name="Steps", min=1, default=2)
+        self.prefix = "fast_blur"
+        self.info = "Fast blur"
+        self.payload = (
+            lambda self, image, context: ImageOperations(image).fast_blur(self.steps).pixels
+        )
+
+
+class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "gaussian_blur"
+        self.info = "Does a Gaussian blur (semi-broken atm)"
+        self.payload = (
+            lambda self, image, context: ImageOperations(image)
+            .gaussian(self.width, self.intensity)
+            .pixels
+        )
+
+
+class Normals_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "normals"
+        self.info = "(Very rough estimate) normal map from RGB"
+        self.payload = (
+            lambda self, image, context: ImageOperations(image)
+            .normals_simple(self.intensity)
+            .pixels
+        )
+
+
+class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
+    # TODO: the smoothing is not complete, it goes only one way
+    """Image seamless generator operator"""
+
+    def generate(self):
+        self.prefix = "gimp_seamless"
+        self.info = "Gimp style seamless image operation"
+
+        def gimpify(self, image, context):
+            pixels = numpy.copy(image)
+            xs, ys = image.shape[0], image.shape[1]
+            image = numpy.roll(image, xs * 2 + xs * 4 * (ys // 2))
+
+            sxs = xs // 2
+            sys = ys // 2
+
+            # generate the mask
+            imask = numpy.zeros((pixels.shape[0], pixels.shape[1]), dtype=float)
+            for y in range(0, sys):
+                zy0 = y / sys + 0.001
+                zy1 = 1 - y / sys + 0.001
+                for x in range(0, sxs):
+                    zx0 = 1 - x / sxs + 0.001
+                    imask[y, x] = 1 - zy0 / zx0
+                    zx1 = x / sxs + 0.001
+                    imask[y, x] = numpy.maximum((1 - zx1 / zy1), imask[y, x])
+
+            imask[imask < 0] = 0
+
+            # copy the data into the three remaining corners
+            imask[0 : sys + 1, sxs : xs - 1] = numpy.fliplr(imask[0 : sys + 1, 0 : sxs - 1])
+            imask[-sys:ys, 0:sys] = numpy.flipud(imask[0:sys, 0:sxs])
+            imask[-sys:ys, sxs : xs - 1] = numpy.flipud(imask[0:sys, sxs : xs - 1])
+            imask[sys, :] = imask[sys - 1, :]  # center line
+
+            # apply mask
+            amask = numpy.zeros(pixels.shape, dtype=float)
+            amask[:, :, 0] = imask
+            amask[:, :, 1] = imask
+            amask[:, :, 2] = imask
+            amask[:, :, 3] = 1.0
+
+            return amask * image + (numpy.ones(amask.shape) - amask) * pixels
+
+        self.payload = gimpify
+
+
+register, unregister = image_ops.create(locals())
