@@ -26,13 +26,6 @@ import importlib
 importlib.reload(master_ops)
 importlib.reload(utils)
 
-# # example for create()
-# # --- Detect all relevant classes in namespace
-# load_these = []
-# for name, obj in locals().copy().items():
-#     if hasattr(obj, "__bases__") and obj.__bases__[0].__name__ == "MeshOperatorGenerator":
-#         load_these.append(obj)
-
 
 def get_teximage(context):
     teximage = None
@@ -47,6 +40,7 @@ def get_teximage(context):
 
 
 def create(lc):
+    """ create(locals()) """
     load_these = []
     for name, obj in lc.copy().items():
         if hasattr(obj, "__bases__") and obj.__bases__[0].__name__ == "ImageOperatorGenerator":
