@@ -1193,4 +1193,121 @@ class MGLRender2_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
+class MGLRender3_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "test_mgl_render3"
+        self.info = "Test 2"
+        self.category = "Debug"
+
+        def _pl(self, image, context):
+            import moderngl
+            import numpy as np
+
+            # default: false, false, 3000, 1.00, 0.3, 0.05, 0.06, 0.9
+            ctx = moderngl.create_context()
+
+            prog = ctx.program(
+                vertex_shader="""
+                    #version 330
+
+                    in vec2 in_vert;
+                    out vec2 vert_pos;
+
+                    void main() {
+                        vert_pos = 0.5 * (in_vert + 1.0);
+                        gl_Position = vec4(in_vert, 0.0, 1.0);
+                    }
+                """,
+                fragment_shader="""
+                    #version 330
+
+                    in vec2 vert_pos;
+                    // in ivec2 in_text;
+                    out vec4 out_vert;
+
+                    uniform sampler2D Texture;
+
+                    const float dA = 1.0;
+                    const float dB = 0.3;
+                    const float feed = 0.05;
+                    const float kill = 0.06;
+                    const float time = 0.9;
+
+                    const float imgSize = 256.0;
+
+                    vec4 tex(ivec2 loc) {
+                        return texelFetch(Texture, loc, 0);
+                        // return texture(Texture, loc);
+                    }
+
+                    void main()
+                    {
+                        ivec2 in_text = ivec2(vert_pos * 256);
+                        vec4 sc = tex(in_text);
+
+                        vec4 lap = vec4(0.0);
+                        lap += tex(in_text + ivec2(0, -1));
+                        lap += tex(in_text + ivec2(0, 1));
+                        lap += tex(in_text + ivec2(-1, 0));
+                        lap += tex(in_text + ivec2(1, 0));
+                        lap /= 4.0;
+
+                        // A2 = A + (self.dA * lp(A) - ab2 + (1.0 - A) * self.feed) * t
+                        // B2 = B + (self.dB * lp(B) + ab2 - B * kf) * t
+
+                        float a = sc.r;
+                        float b = sc.g;
+                        float ab2 = a * pow(b, 2.0);
+                        out_vert.r = a + (dA * (lap.r - sc.r) - ab2 + (1.0 - a) * feed) * time;
+                        out_vert.g = b + (dB * (lap.g - sc.g) + ab2 - b * (kill + feed)) * time;
+                        out_vert.b = 0.0;
+                        out_vert.a = 1.0;
+
+                        // out_vert = vec4(1.0, vert_pos[0], vert_pos[1], 1.0);
+                    }
+                """
+            )
+
+            res = np.ones(shape=image.shape, dtype=np.float32)
+
+            A = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
+            B = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+            w, h = image.shape[0] // 2, image.shape[1] // 2
+            B[w - 5 : w + 5, h - 5 : h + 5] = 1.0
+
+            img_in = np.empty((*image.shape[:2], 4))
+            img_in[:, :, 0] = A
+            img_in[:, :, 1] = B
+            img_in[:, :, 2] = 0.0
+            img_in[:, :, 3] = 0.0
+
+            vertices = np.array([1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0])
+            vbo = ctx.buffer(vertices.astype("f4").tobytes())
+            vao = ctx.simple_vertex_array(prog, vbo, "in_vert")
+
+            pixels = (img_in * 255.0).astype(np.uint8)
+            tex = ctx.texture((*img_in.shape[:2],), 4, pixels.tobytes())
+            tex.use()
+
+            fbo = ctx.simple_framebuffer((*image.shape[:2],), components=4)
+            fbo.use()
+            fbo.clear(0.0, 0.0, 0.0, 1.0)
+
+            for _ in range(2000):
+                vao.render(moderngl.TRIANGLE_STRIP)
+                ctx.copy_framebuffer(tex2, fbo2)
+
+            res = numpy.frombuffer(fbo2.read(), dtype=np.uint8).reshape((*image.shape[:2], 3))
+            res = res / 255.0
+
+            image[:, :, 0] = res[:, :, 0]
+            image[:, :, 1] = res[:, :, 1]
+            image[:, :, 2] = res[:, :, 2]
+
+            return image
+
+        self.payload = _pl
+
+
 register, unregister = image_ops.create(locals())
