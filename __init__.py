@@ -820,6 +820,7 @@ class Grayscale_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "grayscale"
         self.info = "Grayscale from RGB"
+        self.category = "Filter"
         self.payload = lambda self, image, context: ImageOperations(image).grayscale().pixels
 
 
@@ -828,6 +829,7 @@ class Sharpen_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "sharpen"
         self.info = "Simple sharpen"
+        self.category = "Filter"
         self.payload = (
             lambda self, image, context: ImageOperations(image).sharpen(self.intensity).pixels
         )
@@ -838,6 +840,7 @@ class Fastblur_IOP(image_ops.ImageOperatorGenerator):
         self.props["steps"] = bpy.props.IntProperty(name="Steps", min=1, default=2)
         self.prefix = "fast_blur"
         self.info = "Fast blur"
+        self.category = "Filter"
         self.payload = (
             lambda self, image, context: ImageOperations(image).fast_blur(self.steps).pixels
         )
@@ -849,6 +852,7 @@ class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "gaussian_blur"
         self.info = "Does a Gaussian blur (semi-broken atm)"
+        self.category = "Filter"
         self.payload = (
             lambda self, image, context: ImageOperations(image)
             .gaussian(self.width, self.intensity)
@@ -861,6 +865,7 @@ class Normals_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "normals"
         self.info = "(Very rough estimate) normal map from RGB"
+        self.category = "Filter"
         self.payload = (
             lambda self, image, context: ImageOperations(image)
             .normals_simple(self.intensity)
@@ -868,160 +873,13 @@ class Normals_IOP(image_ops.ImageOperatorGenerator):
         )
 
 
-class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
+class LaplacianBlend_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["iter"] = bpy.props.IntProperty(name="Iterations", min=1, default=1000)
-        self.props["dA"] = bpy.props.FloatProperty(name="dA", min=0.0, default=1.0)
-        self.props["dB"] = bpy.props.FloatProperty(name="dB", min=0.0, default=0.5)
-        self.props["feed"] = bpy.props.FloatProperty(name="Feed rate", min=0.0, default=0.055)
-        self.props["kill"] = bpy.props.FloatProperty(name="Kill rate", min=0.0, default=0.062)
-
-        self.prefix = "reaction_diffusion"
-        self.info = "Reaction diffusion"
+        self.prefix = "laplacian_blend"
+        self.info = "Blends two images with Laplacian pyramids"
+        self.category = "Filter"
 
         def _pl(self, image, context):
-            def laplacian(p):
-                ring = -p
-                ring[:-1, :] += p[1:, :] * 0.2
-                ring[1:, :] += p[:-1, :] * 0.2
-                ring[:, :-1] += p[:, 1:] * 0.2
-                ring[:, 1:] += p[:, :-1] * 0.2
-                ring[1:, 1:] += p[:-1, :-1] * 0.05
-                ring[:-1, 1:] += p[1:, :-1] * 0.05
-                ring[1:, :-1] += p[:-1, 1:] * 0.05
-                ring[:-1, :-1] += p[1:, 1:] * 0.05
-                return ring
-
-            def laplacian2(p):
-                ring = -p
-                ring[:-1, :] += p[1:, :] * 0.25
-                ring[-1, :] += p[0, :] * 0.25
-                ring[1:, :] += p[:-1, :] * 0.25
-                ring[0, :] += p[-1, :] * 0.25
-
-                ring[:, :-1] += p[:, 1:] * 0.25
-                ring[:, -1] += p[:, 0] * 0.25
-                ring[:, 1:] += p[:, :-1] * 0.25
-                ring[:, 0] += p[:, -1] * 0.25
-                return ring
-
-            def laplacian3(p):
-                # TODO: broken
-                # is Laplacian separatable?
-                f = lambda m: np.convolve(m, [1, -2, 1], mode='same')
-                p = np.apply_along_axis(f, axis=1, arr=p)
-                p = np.apply_along_axis(f, axis=0, arr=p)
-                return p
-
-            res = np.ones(shape=image.shape, dtype=np.float32)
-
-            # grid init with A=1, B=0, small area B=1
-            gridA = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
-            gridB = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
-            w, h = image.shape[0] // 2, image.shape[1] // 2
-            gridB[w - 10 : w + 10, h - 10 : h + 10] = 1.0
-
-            t = 0.9
-            for _ in range(self.iter):
-                nA = (
-                    gridA
-                    + (
-                        self.dA * laplacian2(gridA)
-                        - gridA * gridB ** 2
-                        + self.feed * (1.0 - gridA)
-                    )
-                    * t
-                )
-                nB = (
-                    gridB
-                    + (
-                        self.dB * laplacian2(gridB)
-                        + gridA * gridB ** 2
-                        - gridB * (self.kill + self.feed)
-                    )
-                    * t
-                )
-                gridA = nA
-                gridB = nB
-
-            v = gridB - gridA
-            v -= np.min(v)
-            v /= np.max(v)
-            res[:, :, 0] = v
-            res[:, :, 1] = v
-            res[:, :, 2] = v
-
-            return res
-
-        self.payload = _pl
-
-
-class MGLRender_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-        self.prefix = "test_mgl_render"
-        self.info = "Test 0"
-        self.category = "Debug"
-
-        def _pl(self, image, context):
-            import moderngl
-            import numpy as np
-
-            from PIL import Image
-
-            ctx = moderngl.create_context()
-
-            prog = ctx.program(
-                vertex_shader="""
-                    #version 330
-
-                    in vec2 in_vert;
-                    in vec3 in_color;
-
-                    out vec3 v_color;
-
-                    void main() {
-                        v_color = in_color;
-                        gl_Position = vec4(in_vert, 0.0, 1.0);
-                    }
-                """,
-                fragment_shader="""
-                    #version 330
-
-                    in vec3 v_color;
-
-                    out vec3 f_color;
-
-                    void main() {
-                        f_color = v_color;
-                    }
-                """,
-            )
-
-            x = np.linspace(-1.0, 1.0, 50)
-            y = np.random.rand(50) - 0.5
-            r = np.ones(50)
-            g = np.zeros(50)
-            b = np.zeros(50)
-
-            vertices = np.dstack([x, y, r, g, b])
-
-            vbo = ctx.buffer(vertices.astype("f4").tobytes())
-            vao = ctx.simple_vertex_array(prog, vbo, "in_vert", "in_color")
-
-            fbo = ctx.simple_framebuffer((image.shape[0], image.shape[1]))
-            fbo.use()
-            fbo.clear(0.0, 0.0, 0.0, 1.0)
-            vao.render(moderngl.LINE_STRIP)
-
-            isize, idata = fbo.size, fbo.read()
-
-            res = numpy.array(Image.frombytes("RGB", isize, idata, "raw", "RGB", 0, -1))
-
-            image[:, :, 0] = res[:, :, 0]
-            image[:, :, 1] = res[:, :, 1]
-            image[:, :, 2] = res[:, :, 2]
-
             return image
 
         self.payload = _pl
@@ -1034,6 +892,7 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "gimp_seamless"
         self.info = "Gimp style seamless image operation"
+        self.category = "Filter"
 
         def gimpify(self, image, context):
             pixels = numpy.copy(image)
@@ -1072,6 +931,266 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
             return amask * image + (numpy.ones(amask.shape) - amask) * pixels
 
         self.payload = gimpify
+
+
+class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["rnda"] = bpy.props.BoolProperty(name="Randomize A", default=False)
+        self.props["rndb"] = bpy.props.BoolProperty(name="Randomize B", default=False)
+        self.props["iter"] = bpy.props.IntProperty(name="Iterations", min=1, default=1000)
+        self.props["dA"] = bpy.props.FloatProperty(name="dA", min=0.0, default=1.0)
+        self.props["dB"] = bpy.props.FloatProperty(name="dB", min=0.0, default=0.5)
+        self.props["feed"] = bpy.props.FloatProperty(name="Feed rate", min=0.0, default=0.055)
+        self.props["kill"] = bpy.props.FloatProperty(name="Kill rate", min=0.0, default=0.062)
+        self.props["time"] = bpy.props.FloatProperty(
+            name="Timestep", min=0.001, max=0.9, default=0.9
+        )
+
+        # lizard scales: true, true, 5000, 1.0, 0.55, 0.082, 0.06, 0.9
+        # default: false, false, 3000, 1.00, 0.3, 0.05, 0.06, 0.9
+
+        self.prefix = "reaction_diffusion"
+        self.info = "Reaction diffusion"
+        self.category = "Generator"
+
+        def _pl(self, image, context):
+            def laplacian(p):
+                ring = -p
+                ring[:-1, :] += p[1:, :] * 0.25
+                ring[-1, :] += p[0, :] * 0.25
+                ring[1:, :] += p[:-1, :] * 0.25
+                ring[0, :] += p[-1, :] * 0.25
+
+                ring[:, :-1] += p[:, 1:] * 0.25
+                ring[:, -1] += p[:, 0] * 0.25
+                ring[:, 1:] += p[:, :-1] * 0.25
+                ring[:, 0] += p[:, -1] * 0.25
+                return ring
+
+            def laplacian3(p):
+                # TODO: broken
+                # is Laplacian separatable?
+                f = lambda m: np.convolve(m, [1, -2, 1], mode="same")
+                p = np.apply_along_axis(f, axis=1, arr=p)
+                p = np.apply_along_axis(f, axis=0, arr=p)
+                return p
+
+            res = np.ones(shape=image.shape, dtype=np.float32)
+
+            # grid init with A=1, B=0, small area B=1
+            if self.rnda:
+                gridA = np.random.random(size=(*image.shape[:2],))
+                # gridA = np.empty(shape=(*image.shape[:2],))
+                ix = image.shape[0]
+                for i in range(ix):
+                    gridA[i, :] *= 0.5 + ((i - ix / 2) / (ix * 2.0))
+            else:
+                gridA = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
+
+            if self.rndb:
+                gridB = np.random.random(size=(*image.shape[:2],))
+                # gridB = np.empty(shape=(*image.shape[:2],))
+                # for i in range(image.shape[0]):
+                #     gridB[i, :] = i / image.shape[0]
+            else:
+                gridB = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+                w, h = image.shape[0] // 2, image.shape[1] // 2
+                gridB[w - 5 : w + 5, h - 5 : h + 5] = 1.0
+
+            lp = laplacian
+
+            A = gridA
+            B = gridB
+            A2 = None
+            B2 = None
+
+            print("v2")
+
+            t = self.time
+            kf = self.kill + self.feed
+            for _ in range(self.iter):
+                ab2 = A * B ** 2
+                A2 = A + (self.dA * lp(A) - ab2 + (1.0 - A) * self.feed) * t
+                B2 = B + (self.dB * lp(B) + ab2 - B * kf) * t
+                A = A2
+                B = B2
+
+            v = B - A
+            v -= np.min(v)
+            v /= np.max(v)
+            res[:, :, 0] = v
+            res[:, :, 1] = v
+            res[:, :, 2] = v
+
+            return res
+
+        self.payload = _pl
+
+
+class MGLRender_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "test_mgl_render"
+        self.info = "Test 0"
+        self.category = "Debug"
+
+        def _pl(self, image, context):
+            import moderngl
+            import numpy as np
+
+            ctx = moderngl.create_context()
+            prog = ctx.program(
+                vertex_shader="""
+                    #version 330
+
+                    in vec2 in_vert;
+                    out vec2 vert_pos;
+
+                    void main() {
+                        vert_pos = 0.5 * (in_vert + 1.0);
+                        gl_Position = vec4(in_vert, 0.0, 1.0);
+                    }
+                """,
+                fragment_shader="""
+                    #version 330
+
+                    in vec2 vert_pos;
+                    out vec3 f_color;
+
+                    void main() {
+                        // moire patterns
+                        float a = length(vert_pos-vec2(0.53, 0.53));
+                        float b = length(vert_pos-vec2(0.47, 0.47));
+                        float as = (sin(a*9999*exp(-a))+1.0)/2.0;
+                        float bs = (sin(b*9999*exp(-b))+1.0)/2.0;
+                        float c = as * bs;
+                        f_color = vec3(c, c, c);
+                    }
+                """,
+            )
+
+            vertices = np.array([1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0])
+
+            vbo = ctx.buffer(vertices.astype("f4").tobytes())
+            vao = ctx.simple_vertex_array(prog, vbo, "in_vert")
+
+            fbo = ctx.simple_framebuffer((image.shape[0], image.shape[1]))
+            fbo.use()
+            fbo.clear(0.0, 0.0, 0.0, 1.0)
+            vao.render(moderngl.TRIANGLE_STRIP)
+
+            res = numpy.frombuffer(fbo.read(), dtype=np.uint8).reshape((*fbo.size, 3)) / 255.0
+            image[:, :, 0] = res[:, :, 0]
+            image[:, :, 1] = res[:, :, 1]
+            image[:, :, 2] = res[:, :, 2]
+
+            return image
+
+        self.payload = _pl
+
+
+class MGLRender2_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "test_mgl_render2"
+        self.info = "Test 1"
+        self.category = "Debug"
+
+        def _pl(self, image, context):
+            import moderngl
+            import numpy as np
+
+            ctx = moderngl.create_context()
+            prog = ctx.program(
+                vertex_shader="""
+                    #version 330
+
+                    in vec2 in_vert;
+                    out vec2 vert_pos;
+
+                    void main() {
+                        vert_pos = 0.5 * (in_vert + 1.0);
+                        gl_Position = vec4(in_vert, 0.0, 1.0);
+                    }
+                """,
+                fragment_shader="""
+                    #version 330
+
+                    in vec2 vert_pos;
+                    out vec4 f_color;
+                    uniform sampler2D Texture;
+
+                    float normpdf(in float x, in float sigma)
+                    {
+                        return 0.39894*exp(-0.5*x*x/(sigma*sigma))/sigma;
+                    }
+
+                    const vec2 iResolution = vec2(512.0, 512.0);
+
+                    void main()
+                    {
+                        vec4 c = texture(Texture, vert_pos.xy);
+
+                        const int mSize = 11;
+                        const int kSize = (mSize-1)/2;
+                        float kernel[mSize];
+                        vec3 final_colour = vec3(0.0);
+
+                        // create the 1-D kernel
+                        float sigma = 7.0;
+                        float Z = 0.0;
+                        for (int j = 0; j <= kSize; ++j)
+                        {
+                            kernel[kSize+j] = kernel[kSize-j] = normpdf(float(j), sigma);
+                        }
+
+                        // get the normalization factor (as the gaussian has been clamped)
+                        for (int j = 0; j < mSize; ++j)
+                        {
+                            Z += kernel[j];
+                        }
+
+                        // read out the texels
+                        for (int i=-kSize; i <= kSize; ++i)
+                        {
+                            for (int j=-kSize; j <= kSize; ++j)
+                            {
+                                final_colour += kernel[kSize+j]*kernel[kSize+i] *
+                                    texture(Texture, vert_pos.xy +
+                                        (vec2(float(i),float(j)))
+                                        / iResolution.xy).rgb;
+                            }
+                        }
+
+                        f_color = vec4(final_colour/(Z*Z), 1.0);
+                    }
+                """,
+            )
+
+            vertices = np.array([1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0])
+
+            vbo = ctx.buffer(vertices.astype("f4").tobytes())
+            vao = ctx.simple_vertex_array(prog, vbo, "in_vert")
+
+            fbo = ctx.simple_framebuffer((*image.shape[:2],), components=4)
+            fbo.use()
+            fbo.clear(0.0, 0.0, 0.0, 1.0)
+
+            tex = ctx.texture((*image.shape[:2],), 4, (image * 255.0).astype(np.uint8).tobytes())
+            tex.use()
+
+            vao.render(moderngl.TRIANGLE_STRIP)
+
+            res = numpy.frombuffer(fbo.read(components=4), dtype=np.uint8).reshape((*fbo.size, 4))
+            res = res / 255.0
+
+            image[:, :, 0] = res[:, :, 0]
+            image[:, :, 1] = res[:, :, 1]
+            image[:, :, 2] = res[:, :, 2]
+
+            return image
+
+        self.payload = _pl
 
 
 register, unregister = image_ops.create(locals())
