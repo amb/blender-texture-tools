@@ -935,19 +935,52 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
 
 class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["rnda"] = bpy.props.BoolProperty(name="Randomize A", default=False)
-        self.props["rndb"] = bpy.props.BoolProperty(name="Randomize B", default=False)
+        self.props["atype"] = bpy.props.EnumProperty(
+            name="A Type",
+            items=[
+                ("RANDOM", "Random", "", 1),
+                ("ZERO", "Zero", "", 2),
+                ("ONES", "Ones", "", 4),
+                ("RANGE", "Range", "", 3),
+            ],
+        )
+        self.props["btype"] = bpy.props.EnumProperty(
+            name="B Type",
+            items=[
+                ("RANDOM", "Random", "", 1),
+                ("ZERO", "Zero", "", 2),
+                ("ONES", "Ones", "", 4),
+                ("MIDDLE", "Middle", "", 3),
+            ],
+        )
+
+        self.props["output"] = bpy.props.EnumProperty(
+            name="Output",
+            items=[
+                ("B_A", "B-A", "", 1),
+                ("A_B", "A-B", "", 2),
+                ("A", "A", "", 3),
+                ("B", "B", "", 4),
+                ("B*A", "B*A", "", 5),
+                ("B+A", "B+A", "", 6),
+            ],
+        )
+
         self.props["iter"] = bpy.props.IntProperty(name="Iterations", min=1, default=1000)
         self.props["dA"] = bpy.props.FloatProperty(name="dA", min=0.0, default=1.0)
         self.props["dB"] = bpy.props.FloatProperty(name="dB", min=0.0, default=0.5)
-        self.props["feed"] = bpy.props.FloatProperty(name="Feed rate", min=0.0, default=0.055)
-        self.props["kill"] = bpy.props.FloatProperty(name="Kill rate", min=0.0, default=0.062)
+        self.props["feed"] = bpy.props.FloatProperty(name="Feed rat (x100)", min=0.0, default=5.5)
+        self.props["kill"] = bpy.props.FloatProperty(name="Kill rate (x100)", min=0.0, default=6.2)
         self.props["time"] = bpy.props.FloatProperty(
-            name="Timestep", min=0.001, max=0.9, default=0.9
+            name="Timestep", min=0.001, max=1.0, default=0.9
+        )
+        self.props["scale"] = bpy.props.FloatProperty(
+            name="Scale", min=0.01, default=1.0, max=100.0
         )
 
         # lizard scales: true, true, 5000, 1.0, 0.55, 0.082, 0.06, 0.9
         # default: false, false, 3000, 1.00, 0.3, 0.05, 0.06, 0.9
+        # stones: ones, random, b*a, 7556, 1.00, 0.34, 0.07, 0.06, 0.84
 
         self.prefix = "reaction_diffusion"
         self.info = "Reaction diffusion"
@@ -980,7 +1013,6 @@ class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
             # grid init with A=1, B=0, small area B=1
             if self.rnda:
                 gridA = np.random.random(size=(*image.shape[:2],))
-                # gridA = np.empty(shape=(*image.shape[:2],))
                 ix = image.shape[0]
                 for i in range(ix):
                     gridA[i, :] *= 0.5 + ((i - ix / 2) / (ix * 2.0))
@@ -989,9 +1021,6 @@ class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
 
             if self.rndb:
                 gridB = np.random.random(size=(*image.shape[:2],))
-                # gridB = np.empty(shape=(*image.shape[:2],))
-                # for i in range(image.shape[0]):
-                #     gridB[i, :] = i / image.shape[0]
             else:
                 gridB = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
                 w, h = image.shape[0] // 2, image.shape[1] // 2
@@ -1024,12 +1053,171 @@ class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
 
             return res
 
-        self.payload = _pl
+        def _pl2(self, image, context):
+            import moderngl
+            import numpy as np
+
+            # TODO: floats instead of uint8
+
+            ctx = moderngl.create_context()
+
+            prog = ctx.program(
+                vertex_shader="""
+                    #version 330
+
+                    in vec2 in_vert;
+                    out vec2 vert_pos;
+
+                    void main() {
+                        vert_pos = 0.5 * (in_vert + 1.0);
+                        gl_Position = vec4(in_vert, 0.0, 1.0);
+                    }
+                """,
+                fragment_shader="""
+                    #version 330
+
+                    in vec2 vert_pos;
+                    out vec4 out_vert;
+
+                    uniform sampler2D Texture;
+
+                    uniform float dA = 1.0;
+                    uniform float dB = 0.3;
+                    uniform float feed = 0.05;
+                    uniform float kill = 0.06;
+                    uniform float time = 0.9;
+                    uniform float scale = 1.0;
+                    uniform int imgSize = 256;
+
+                    vec4 tex(float x, float y) {
+                        return texture(Texture, vec2(mod(x, 1.0), mod(y, 1.0)));
+                    }
+
+                    void main()
+                    {
+                        float fstep = scale/float(imgSize);
+                        float x = vert_pos.x;
+                        float y = vert_pos.y;
+                        vec4 sc = tex(x, y);
+
+                        vec4 lap = vec4(0.0);
+                        lap += tex(x, y-fstep);
+                        lap += tex(x, y+fstep);
+                        lap += tex(x-fstep, y);
+                        lap += tex(x+fstep, y);
+                        lap += tex(x-fstep, y-fstep)*0.5;
+                        lap += tex(x-fstep, y+fstep)*0.5;
+                        lap += tex(x+fstep, y-fstep)*0.5;
+                        lap += tex(x+fstep, y+fstep)*0.5;
+                        lap /= 6.0;
+
+                        // A2 = A + (self.dA * lp(A) - ab2 + (1.0 - A) * self.feed) * t
+                        // B2 = B + (self.dB * lp(B) + ab2 - B * kf) * t
+
+                        float a = sc.r;
+                        float b = sc.g;
+                        float ab2 = a * pow(b, 2.0);
+                        out_vert.r = a + (dA * (lap.r - sc.r) - ab2 + (1.0 - a) * feed) * time;
+                        out_vert.g = b + (dB * (lap.g - sc.g) + ab2 - b * (kill + feed)) * time;
+                    }
+                """,
+            )
+
+            res = np.ones(shape=image.shape, dtype=np.float32)
+            w, h = image.shape[0] // 2, image.shape[1] // 2
+
+            if self.atype == "RANDOM":
+                A = np.random.random(size=(*image.shape[:2],))
+            elif self.atype == "RANGE":
+                A = np.random.random(size=(*image.shape[:2],))
+                ix = image.shape[0]
+                for i in range(ix):
+                    A[i, :] *= 0.5 + ((i - ix / 2) / (ix * 2.0))
+            elif self.atype == "ONES":
+                A = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
+            else:
+                A = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+
+            if self.btype == "RANDOM":
+                B = np.random.random(size=(*image.shape[:2],))
+            elif self.btype == "MIDDLE":
+                B = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+                B[w - 5 : w + 5, h - 5 : h + 5] = 1.0
+            elif self.btype == "ONES":
+                B = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
+            elif self.btype == "ZERO":
+                B = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+
+            img_in = np.empty((*image.shape[:2], 4))
+            img_in[:, :, 0] = A
+            img_in[:, :, 1] = B
+            img_in[:, :, 2] = 0.0
+            img_in[:, :, 3] = 0.0
+
+            prog.get("imgSize", -1).value = img_in.shape[0]
+            prog.get("dA", -1).value = self.dA
+            prog.get("dB", -1).value = self.dB
+            prog.get("feed", -1).value = self.feed / 100
+            prog.get("kill", -1).value = self.kill / 100
+            prog.get("time", -1).value = self.time
+            prog.get("scale", -1).value = self.scale
+
+            vertices = np.array([1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0])
+            vbo = ctx.buffer(vertices.astype("f4").tobytes())
+            vao = ctx.simple_vertex_array(prog, vbo, "in_vert")
+
+            precision = "f1"
+            np_dtype = np.uint8
+
+            pixels = (img_in * 255.0).astype(np_dtype)
+            # pixels = img_in.astype(np_dtype)
+            tex = ctx.texture((*img_in.shape[:2],), 4, pixels.tobytes(), dtype=precision)
+            tex.use()
+
+            fbo = ctx.simple_framebuffer((*image.shape[:2],), components=4, dtype=precision)
+            fbo.use()
+            fbo.clear(0.0, 0.0, 0.0, 1.0)
+
+            for _ in range(self.iter):
+                vao.render(moderngl.TRIANGLE_STRIP)
+                ctx.copy_framebuffer(tex, fbo)
+                # tex.write(fbo.read(components=4)) # slow
+
+            res = numpy.frombuffer(fbo.read(dtype=precision), dtype=np_dtype).reshape(
+                (*image.shape[:2], 3)
+            )
+            # res = res / 255.0
+            res  = res * 1.0
+
+            if self.output == "B_A":
+                total = res[:, :, 1] - res[:, :, 0]
+            if self.output == "A_B":
+                total = res[:, :, 0] - res[:, :, 1]
+            if self.output == "A":
+                total = res[:, :, 0]
+            if self.output == "B":
+                total = res[:, :, 1]
+            if self.output == "B*A":
+                total = res[:, :, 1] * res[:, :, 0]
+            if self.output == "B+A":
+                total = res[:, :, 1] + res[:, :, 0]
+
+            total -= np.min(total)
+            npm = np.max(total)
+            if npm > 0.0:
+                total /= npm
+
+            image[:, :, 0] = total
+            image[:, :, 1] = total
+            image[:, :, 2] = total
+
+            return image
+
+        self.payload = _pl2
 
 
 class MGLRender_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "test_mgl_render"
         self.info = "Test 0"
         self.category = "Debug"
@@ -1091,7 +1279,6 @@ class MGLRender_IOP(image_ops.ImageOperatorGenerator):
 
 class MGLRender2_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "test_mgl_render2"
         self.info = "Test 1"
         self.category = "Debug"
@@ -1195,7 +1382,6 @@ class MGLRender2_IOP(image_ops.ImageOperatorGenerator):
 
 class MGLRender3_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "test_mgl_render3"
         self.info = "Test 2"
         self.category = "Debug"
@@ -1223,34 +1409,34 @@ class MGLRender3_IOP(image_ops.ImageOperatorGenerator):
                     #version 330
 
                     in vec2 vert_pos;
-                    // in ivec2 in_text;
                     out vec4 out_vert;
 
                     uniform sampler2D Texture;
 
-                    const float dA = 1.0;
-                    const float dB = 0.3;
-                    const float feed = 0.05;
-                    const float kill = 0.06;
-                    const float time = 0.9;
+                    uniform float dA = 1.0;
+                    uniform float dB = 0.3;
+                    uniform float feed = 0.05;
+                    uniform float kill = 0.06;
+                    uniform float time = 0.9;
 
-                    const float imgSize = 256.0;
+                    uniform int imgSize = 256;
 
-                    vec4 tex(ivec2 loc) {
-                        return texelFetch(Texture, loc, 0);
-                        // return texture(Texture, loc);
+                    vec4 tex(int x, int y) {
+                        return texelFetch(Texture, ivec2(x % imgSize, y % imgSize), 0);
                     }
 
                     void main()
                     {
-                        ivec2 in_text = ivec2(vert_pos * 256);
-                        vec4 sc = tex(in_text);
+                        ivec2 in_text = ivec2(vert_pos * imgSize);
+                        int x = in_text.x;
+                        int y = in_text.y;
+                        vec4 sc = tex(x, y);
 
                         vec4 lap = vec4(0.0);
-                        lap += tex(in_text + ivec2(0, -1));
-                        lap += tex(in_text + ivec2(0, 1));
-                        lap += tex(in_text + ivec2(-1, 0));
-                        lap += tex(in_text + ivec2(1, 0));
+                        lap += tex(x, y-1);
+                        lap += tex(x, y+1);
+                        lap += tex(x-1, y);
+                        lap += tex(x+1, y);
                         lap /= 4.0;
 
                         // A2 = A + (self.dA * lp(A) - ab2 + (1.0 - A) * self.feed) * t
@@ -1261,12 +1447,8 @@ class MGLRender3_IOP(image_ops.ImageOperatorGenerator):
                         float ab2 = a * pow(b, 2.0);
                         out_vert.r = a + (dA * (lap.r - sc.r) - ab2 + (1.0 - a) * feed) * time;
                         out_vert.g = b + (dB * (lap.g - sc.g) + ab2 - b * (kill + feed)) * time;
-                        out_vert.b = 0.0;
-                        out_vert.a = 1.0;
-
-                        // out_vert = vec4(1.0, vert_pos[0], vert_pos[1], 1.0);
                     }
-                """
+                """,
             )
 
             res = np.ones(shape=image.shape, dtype=np.float32)
@@ -1286,6 +1468,13 @@ class MGLRender3_IOP(image_ops.ImageOperatorGenerator):
             vbo = ctx.buffer(vertices.astype("f4").tobytes())
             vao = ctx.simple_vertex_array(prog, vbo, "in_vert")
 
+            prog.get("imgSize", -1).value = img_in.shape[0]
+            prog.get("dA", -1).value = 1.0
+            prog.get("dB", -1).value = 0.3
+            prog.get("feed", -1).value = 0.05
+            prog.get("kill", -1).value = 0.06
+            prog.get("time", -1).value = 0.9
+
             pixels = (img_in * 255.0).astype(np.uint8)
             tex = ctx.texture((*img_in.shape[:2],), 4, pixels.tobytes())
             tex.use()
@@ -1294,16 +1483,18 @@ class MGLRender3_IOP(image_ops.ImageOperatorGenerator):
             fbo.use()
             fbo.clear(0.0, 0.0, 0.0, 1.0)
 
-            for _ in range(2000):
+            for _ in range(5000):
                 vao.render(moderngl.TRIANGLE_STRIP)
-                ctx.copy_framebuffer(tex2, fbo2)
+                ctx.copy_framebuffer(tex, fbo)
 
-            res = numpy.frombuffer(fbo2.read(), dtype=np.uint8).reshape((*image.shape[:2], 3))
+            res = numpy.frombuffer(fbo.read(), dtype=np.uint8).reshape((*image.shape[:2], 3))
             res = res / 255.0
-
-            image[:, :, 0] = res[:, :, 0]
-            image[:, :, 1] = res[:, :, 1]
-            image[:, :, 2] = res[:, :, 2]
+            total = res[:, :, 1] - res[:, :, 0]
+            total -= np.min(total)
+            total /= np.max(total)
+            image[:, :, 0] = total
+            image[:, :, 1] = total
+            image[:, :, 2] = total
 
             return image
 
