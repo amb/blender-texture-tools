@@ -36,6 +36,8 @@ import bpy
 import copy
 from . import image_ops
 import importlib
+import bmesh
+import mathutils as mu
 
 importlib.reload(image_ops)
 
@@ -83,6 +85,46 @@ def compute_shading():
         float tNear = max(max(t1.x, t1.y), t1.z);
         float tFar = min(min(t2.x, t2.y), t2.z);
         return vec2(tNear, tFar);
+    }
+    """
+
+    ray_tracer = """
+    float sphere(vec3 ray, vec3 dir, vec3 center, float radius)
+    {
+        vec3 rc = ray-center;
+        float c = dot(rc, rc) - (radius*radius);
+        float b = dot(dir, rc);
+        float d = b*b - c;
+        float t = -b - sqrt(abs(d));
+        float st = step(0.0, min(t,d));
+        return mix(-1.0, t, st);
+    }
+
+    vec3 background(float t, vec3 rd)
+    {
+        vec3 light = normalize(vec3(sin(t), 0.6, cos(t)));
+        float sun = max(0.0, dot(rd, light));
+        float sky = max(0.0, dot(rd, vec3(0.0, 1.0, 0.0)));
+        float ground = max(0.0, -dot(rd, vec3(0.0, 1.0, 0.0)));
+        return \
+        (pow(sun, 256.0)+0.2*pow(sun, 2.0))*vec3(2.0, 1.6, 1.0) +
+        pow(ground, 0.5)*vec3(0.4, 0.3, 0.2) +
+        pow(sky, 1.0)*vec3(0.5, 0.6, 0.7);
+    }
+
+    void main(void)
+    {
+        vec2 uv = (-1.0 + 2.0*gl_FragCoord.xy / iResolution.xy) *
+        vec2(iResolution.x/iResolution.y, 1.0);
+        vec3 ro = vec3(0.0, 0.0, -3.0);
+        vec3 rd = normalize(vec3(uv, 1.0));
+        vec3 p = vec3(0.0, 0.0, 0.0);
+        float t = sphere(ro, rd, p, 1.0);
+        vec3 nml = normalize(p - (ro+rd*t));
+        vec3 bgCol = background(iGlobalTime, rd);
+        rd = reflect(rd, nml);
+        vec3 col = background(iGlobalTime, rd) * vec3(0.9, 0.8, 1.0);
+        gl_FragColor = vec4( mix(bgCol, col, step(0.0, t)), 1.0 );
     }
     """
 
@@ -885,6 +927,114 @@ class LaplacianBlend_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
+class RenderObject_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["object"] = bpy.props.PointerProperty(name="Target", type=bpy.types.Object)
+
+        self.prefix = "render_object"
+        self.info = "Simple render of selected object"
+        self.category = "Debug"
+
+        def _pl(self, image, context):
+            bm = bmesh.new()
+            bm.from_mesh(self.object.data)
+            bmesh.ops.triangulate(bm, faces=bm.faces[:])
+
+            import numba
+            @numba.jit(nopython=True)
+            def intersect_ray(ro, rd, vrt):
+                def cross(a, b):
+                    return np.array(
+                        [
+                            a[1] * b[2] - a[2] * b[1],
+                            a[2] * b[0] - a[0] * b[2],
+                            a[0] * b[1] - a[1] * b[0],
+                        ]
+                    )
+
+                def dot(a, b):
+                    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+                def tri_intersect(ro, rd, v0, v1, v2):
+                    v1v0 = v1 - v0
+                    v2v0 = v2 - v0
+                    rov0 = ro - v0
+                    n = cross(v1v0, v2v0)
+                    q = cross(rov0, rd)
+                    rdn = np.dot(rd, n)
+                    if rdn == 0.0:
+                        return (-1.0, 0.0, 0.0)
+                    d = 1.0 / rdn
+                    u = d * (dot(-q, v2v0))
+                    v = d * (dot(q, v1v0))
+                    t = d * (dot(-n, rov0))
+                    if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
+                        t = -1.0
+                    return (t, u, v)
+
+                c = 500.0
+                n = -1
+                for i in range(len(vrt) // 9):
+                    iv = i * 9
+                    rcast = tri_intersect(
+                        ro,
+                        rd,
+                        np.array([vrt[iv + 0], vrt[iv + 1], vrt[iv + 2]]),
+                        np.array([vrt[iv + 3], vrt[iv + 4], vrt[iv + 5]]),
+                        np.array([vrt[iv + 6], vrt[iv + 7], vrt[iv + 8]]),
+                    )
+                    if rcast[0] < c and rcast[0] > 0.0:
+                        c = rcast[0]
+                        n = i
+                return (c, n)
+
+            # rays
+            rd = np.array([0.0, 1.0, 0.0])
+            ro = np.empty((image.shape[0], image.shape[1], 3))
+            w, h = image.shape[0], image.shape[1]
+            for x in range(image.shape[0]):
+                for y in range(image.shape[1]):
+                    ro[x, y, 0] = y * 2 / h - 1.0
+                    ro[x, y, 1] = -5.0
+                    ro[x, y, 2] = x * 2 / w - 1.0
+
+            # mesh
+            verts = np.zeros((len(bm.faces), 3, 3))
+            for fi, f in enumerate(bm.faces):
+                vv = f.verts
+                verts[fi] = [i.co for i in vv]
+                v1v0 = vv[1].co - vv[0].co
+                v2v0 = vv[2].co - vv[0].co
+                assert v1v0.length > 0.0
+                assert v2v0.length > 0.0
+
+            verts = verts.reshape((verts.shape[0] * 3 * 3))
+            bm.faces.ensure_lookup_table()
+
+            sun_direction = mu.Vector([0.5, -0.5, 0.5]).normalized()
+            print(image.shape, verts.shape)
+            for x in range(image.shape[0]):
+                print(x)
+                for y in range(image.shape[1]):
+                    r = intersect_ray(ro[x, y], rd, verts)
+                    c = 0.0
+                    if r[1] >= 0:
+                        norm = bm.faces[r[1]].normal
+                        c = norm.dot(sun_direction)
+                        if c < 0.0:
+                            c = 0.0
+
+                    image[x, y, 0] = c
+                    image[x, y, 1] = c
+                    image[x, y, 2] = c
+                    image[x, y, 3] = 1.0
+
+            bm.free()
+            return image
+
+        self.payload = _pl
+
+
 class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
     # TODO: the smoothing is not complete, it goes only one way
     """Image seamless generator operator"""
@@ -969,7 +1119,7 @@ class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
         self.props["iter"] = bpy.props.IntProperty(name="Iterations", min=1, default=1000)
         self.props["dA"] = bpy.props.FloatProperty(name="dA", min=0.0, default=1.0)
         self.props["dB"] = bpy.props.FloatProperty(name="dB", min=0.0, default=0.5)
-        self.props["feed"] = bpy.props.FloatProperty(name="Feed rat (x100)", min=0.0, default=5.5)
+        self.props["feed"] = bpy.props.FloatProperty(name="Feed rate (x100)", min=0.0, default=5.5)
         self.props["kill"] = bpy.props.FloatProperty(name="Kill rate (x100)", min=0.0, default=6.2)
         self.props["time"] = bpy.props.FloatProperty(
             name="Timestep", min=0.001, max=1.0, default=0.9
@@ -1186,8 +1336,7 @@ class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
             res = numpy.frombuffer(fbo.read(dtype=precision), dtype=np_dtype).reshape(
                 (*image.shape[:2], 3)
             )
-            # res = res / 255.0
-            res  = res * 1.0
+            res = res / 255.0
 
             if self.output == "B_A":
                 total = res[:, :, 1] - res[:, :, 0]
