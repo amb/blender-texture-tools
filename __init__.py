@@ -940,84 +940,27 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
             bm.from_mesh(self.object.data)
             bmesh.ops.triangulate(bm, faces=bm.faces[:])
 
-            import numba
-            @numba.njit("f4[:](f4[:],f4[:])")
-            def cross(a, b):
-                return np.array(
-                    [
-                        a[1] * b[2] - a[2] * b[1],
-                        a[2] * b[0] - a[0] * b[2],
-                        a[0] * b[1] - a[1] * b[0],
-                    ]
-                )
-
-            @numba.njit("f4(f4[:],f4[:])")
-            def dot(a, b):
-                return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-            @numba.njit("f4(f4[:],f4[:],f4[:],f4[:],f4[:])")
-            def tri_intersect(ro, rd, v0, v1, v2):
-                v1v0 = v1 - v0
-                v2v0 = v2 - v0
-                rov0 = ro - v0
-                n = cross(v1v0, v2v0)
-                q = cross(rov0, rd)
-                rdn = dot(rd, n)
-                if rdn == 0.0:
-                    return -1.0
-                    # return (-1.0, 0.0, 0.0)
-                d = 1.0 / rdn
-                u = d * (dot(-q, v2v0))
-                v = d * (dot(q, v1v0))
-                t = d * (dot(-n, rov0))
-                if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
-                    t = -1.0
-                # return (t, u, v)
-                return t
-
-            @numba.njit("int32(f4[:],f4[:],f4[:,:])")
-            def intersect_ray(ro, rda, vrt):
-                c = 500.0
-                n = -1
-                for i in range(len(vrt) // 3):
-                    iv = i * 3
-                    rcast = tri_intersect(ro, rda, vrt[iv], vrt[iv + 1], vrt[iv + 2])
-                    if rcast < c and rcast > 0.0:
-                        c = rcast
-                        n = i
-                return n
-
-            # this crashes
-            # @numba.njit('void(f4[:],f4[:],f4[:,:],f4[:,:],f4[:,:,:],f4[:,:])')
-            @numba.guvectorize(
-                ["(f4[:],f4[:],f4[:,:],f4[:,:],f4[:,:,:],f4[:,:])"],
-                "(n),(n),(f,n),(v,n),(width,height,n)->(width,height)",
-                target="parallel",
-                nopython=True,
-            )
-            def raytrace_jit(rda, sd, norms, vrt, roa, img):
-                for x in range(img.shape[0]):
-                    for y in range(img.shape[1]):
-                        r = intersect_ray(roa[x, y], rda, vrt)
-                        img[x, y] = dot(norms[r], sd) if r >= 0 else 0.0
-
             datatype = np.float32
 
             # rays
-            rd = np.array([0.0, 1.0, 0.0], dtype=datatype)
-            ro = np.empty((image.shape[0], image.shape[1], 3), dtype=datatype)
+            rays = np.empty((image.shape[0], image.shape[1], 2, 3), dtype=datatype)
             w, h = image.shape[0], image.shape[1]
             for x in range(image.shape[0]):
                 for y in range(image.shape[1]):
-                    ro[x, y, 0] = y * 2 / h - 1.0
-                    ro[x, y, 1] = -5.0
-                    ro[x, y, 2] = x * 2 / w - 1.0
+                    # ray origin
+                    rays[x, y, 0, 0] = y * 2 / h - 1.0
+                    rays[x, y, 0, 1] = -5.0
+                    rays[x, y, 0, 2] = x * 2 / w - 1.0
+                    # ray direction
+                    rays[x, y, 1, 0] = 0.0
+                    rays[x, y, 1, 1] = 1.0
+                    rays[x, y, 1, 2] = 0.0
 
             # mesh
-            verts = np.zeros((len(bm.faces), 3, 3), dtype=datatype)
+            tris = np.zeros((len(bm.faces), 3, 3), dtype=datatype)
             for fi, f in enumerate(bm.faces):
                 vv = f.verts
-                verts[fi] = [i.co for i in vv]
+                tris[fi] = [i.co for i in vv]
                 v1v0 = vv[1].co - vv[0].co
                 v2v0 = vv[2].co - vv[0].co
                 assert v1v0.length > 0.0
@@ -1025,16 +968,192 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
 
             bm.faces.ensure_lookup_table()
 
-            verts = verts.reshape((verts.shape[0] * 3, 3))
             sun_direction = np.array(mu.Vector([0.5, -0.5, 0.5]).normalized(), dtype=datatype)
             normals = np.array(
                 [np.array(i.normal, dtype=datatype) for i in bm.faces], dtype=datatype
             )
 
-            print(image.shape, verts.shape, verts.dtype)
+            print(image.shape, rays.shape, tris.shape, rays.dtype)
             result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
 
-            raytrace_jit(rd, sun_direction, normals, verts, ro, result)
+            def rt_nb(do_a_jit=True):
+                import numba
+
+                def intersect_ray(ro, rda, vrt):
+                    def cross(a, b):
+                        return np.array(
+                            [
+                                a[1] * b[2] - a[2] * b[1],
+                                a[2] * b[0] - a[0] * b[2],
+                                a[0] * b[1] - a[1] * b[0],
+                            ]
+                        )
+
+                    def dot(a, b):
+                        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+                    def tri_intersect(ro, rd, v0, v1, v2):
+                        v1v0 = v1 - v0
+                        v2v0 = v2 - v0
+                        rov0 = ro - v0
+                        n = cross(v1v0, v2v0)
+                        q = cross(rov0, rd)
+                        rdn = dot(rd, n)
+                        if rdn == 0.0:
+                            return -1.0
+                            # return (-1.0, 0.0, 0.0)
+                        d = 1.0 / rdn
+                        u = d * (dot(-q, v2v0))
+                        v = d * (dot(q, v1v0))
+                        t = d * (dot(-n, rov0))
+                        if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
+                            t = -1.0
+                        # return (t, u, v)
+                        return t
+
+                    c = 1.0e10
+                    n = -1
+                    for i in range(len(vrt) // 3):
+                        iv = i * 3
+                        rcast = tri_intersect(ro, rda, vrt[iv], vrt[iv + 1], vrt[iv + 2])
+                        if rcast < c and rcast > 0.0:
+                            c = rcast
+                            n = i
+
+                    return n
+
+                if do_a_jit:
+                    intersect_ray = numba.njit(parallel=False)(intersect_ray)
+
+                result = np.empty((image.shape[0], image.shape[1]), dtype=np.float32)
+
+                def rnd_res(ro, rd, verts, normals, sun_direction, res):
+                    for x in range(res.shape[0]):
+                        print(x)
+                        for y in numba.prange(res.shape[1]):
+                            r = intersect_ray(ro[x, y], rd, verts)
+                            res[x, y] = np.dot(normals[r], sun_direction) if r >= 0 else 0.0
+
+                rnd_res(ro, rd, verts, normals, sun_direction, result)
+
+                return result
+
+            # numba is aboug 20x speedup with single core CPU
+            # result = rt_nb(do_a_jit=True)
+
+            def rt_glcompute():
+                # in: rays, tris
+                # out: result
+
+                import bgl
+                import moderngl
+
+                print("OpenGL supported version (by Blender):", bgl.glGetString(bgl.GL_VERSION))
+                ctx = moderngl.create_context(require=430)
+                print("GL context version code:", ctx.version_code)
+                assert ctx.version_code >= 430
+                print(
+                    "Compute max work group size:",
+                    ctx.info["GL_MAX_COMPUTE_WORK_GROUP_SIZE"],
+                    end="\n\n",
+                )
+
+                basic_shader = """
+                #version 430
+                #define TILE_WIDTH 8
+                #define TILE_HEIGHT 8
+
+                const ivec2 tileSize = ivec2(TILE_WIDTH, TILE_HEIGHT);
+
+                layout(local_size_x=TILE_WIDTH, local_size_y=TILE_HEIGHT) in;
+                layout(binding=0) writeonly buffer out_0 { float outp[]; };
+                layout(std430, binding=1) readonly buffer Tris { float tris[]; };
+                layout(std430, binding=2) readonly buffer Rays { float rays[]; };
+
+                uniform uint img_size;
+                uniform uint tris_size;
+
+                uniform vec3 sun_direction;
+
+                float tri_isec2(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2) {
+                    vec3 v1v0 = v1 - v0;
+                    vec3 v2v0 = v2 - v0;
+                    vec3 rov0 = ro - v0;
+                    vec3 n = cross(v1v0, v2v0);
+                    vec3 q = cross(rov0, rd);
+                    float rdn = dot(rd, n);
+                    //if (rdn == 0.0) return -1.0;
+                    float d = 1.0 / rdn;
+                    float u = d * (dot(-q, v2v0));
+                    float v = d * (dot(q, v1v0));
+                    float t = d * (dot(-n, rov0));
+                    if (u < 0.0 || u > 1.0 || v < 0.0 || u + v > 1.0) t = -1.0;
+                    //return vec3(t, u, v)
+                    return t;
+                }
+
+                void main() {
+                    uint tx = gl_GlobalInvocationID.x;
+                    uint ty = gl_GlobalInvocationID.y;
+                    uint loc = tx + ty * img_size;
+
+                    float outc = 0.0;
+
+                    vec3 orig = vec3(rays[loc*6+0], rays[loc*6+1], rays[loc*6+2]);
+                    vec3 dir =  vec3(rays[loc*6+3], rays[loc*6+4], rays[loc*6+5]);
+
+                    uint face = -1;
+                    float dist = 10000.0;
+                    vec3 normal = vec3(0.0, 0.0, 0.0);
+                    for (uint i=0; i<tris_size; i++) {
+                        vec3 v0 = vec3(tris[i*9+0], tris[i*9+1], tris[i*9+2]);
+                        vec3 v1 = vec3(tris[i*9+3], tris[i*9+4], tris[i*9+5]);
+                        vec3 v2 = vec3(tris[i*9+6], tris[i*9+7], tris[i*9+8]);
+                        float rc = tri_isec2(orig, dir, v0, v1, v2);
+                        if (rc > 0.0 && rc < dist) {
+                            dist = rc;
+                            face = i;
+
+                            vec3 va = v0-v1;
+                            vec3 vb = v0-v2;
+                            normal = normalize(cross(va, vb));
+                        }
+                    }
+
+                    if (face > 0) {
+                        outp[loc] = dot(sun_direction, normal);
+                    } else {
+                        outp[loc] = 0.0;
+                    }
+                }
+                """
+
+                sourcepixels = np.empty((image.shape[0], image.shape[1]), dtype=np.float32)
+                compute_shader = ctx.compute_shader(basic_shader)
+
+                print("start compute")
+                out_buffer = ctx.buffer(sourcepixels)
+                out_buffer.bind_to_storage_buffer(0)
+
+                tri_buffer = ctx.buffer(tris)
+                tri_buffer.bind_to_storage_buffer(1)
+                compute_shader.get("tris_size", 5).value = len(tris)
+                print(len(tris))
+
+                ray_buffer = ctx.buffer(rays)
+                ray_buffer.bind_to_storage_buffer(2)
+
+                compute_shader.get("img_size", 5).value = image.shape[0]
+                compute_shader.get("sun_direction", 5).value = (*sun_direction,)
+                compute_shader.run(group_x=image.shape[0] // 8, group_y=image.shape[1] // 8)
+                print("end compute")
+
+                return np.frombuffer(out_buffer.read(), dtype=np.float32).reshape(
+                    (*image.shape[:2])
+                )
+
+            result = rt_glcompute()
+            print(np.min(result), np.max(result))
 
             image[:, :, 0] = result
             image[:, :, 1] = result
