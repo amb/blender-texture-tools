@@ -941,56 +941,71 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
             bmesh.ops.triangulate(bm, faces=bm.faces[:])
 
             import numba
-            @numba.jit(nopython=True)
-            def intersect_ray(ro, rd, vrt):
-                def cross(a, b):
-                    return np.array(
-                        [
-                            a[1] * b[2] - a[2] * b[1],
-                            a[2] * b[0] - a[0] * b[2],
-                            a[0] * b[1] - a[1] * b[0],
-                        ]
-                    )
+            @numba.njit("f4[:](f4[:],f4[:])")
+            def cross(a, b):
+                return np.array(
+                    [
+                        a[1] * b[2] - a[2] * b[1],
+                        a[2] * b[0] - a[0] * b[2],
+                        a[0] * b[1] - a[1] * b[0],
+                    ]
+                )
 
-                def dot(a, b):
-                    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+            @numba.njit("f4(f4[:],f4[:])")
+            def dot(a, b):
+                return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
-                def tri_intersect(ro, rd, v0, v1, v2):
-                    v1v0 = v1 - v0
-                    v2v0 = v2 - v0
-                    rov0 = ro - v0
-                    n = cross(v1v0, v2v0)
-                    q = cross(rov0, rd)
-                    rdn = np.dot(rd, n)
-                    if rdn == 0.0:
-                        return (-1.0, 0.0, 0.0)
-                    d = 1.0 / rdn
-                    u = d * (dot(-q, v2v0))
-                    v = d * (dot(q, v1v0))
-                    t = d * (dot(-n, rov0))
-                    if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
-                        t = -1.0
-                    return (t, u, v)
+            @numba.njit("f4(f4[:],f4[:],f4[:],f4[:],f4[:])")
+            def tri_intersect(ro, rd, v0, v1, v2):
+                v1v0 = v1 - v0
+                v2v0 = v2 - v0
+                rov0 = ro - v0
+                n = cross(v1v0, v2v0)
+                q = cross(rov0, rd)
+                rdn = dot(rd, n)
+                if rdn == 0.0:
+                    return -1.0
+                    # return (-1.0, 0.0, 0.0)
+                d = 1.0 / rdn
+                u = d * (dot(-q, v2v0))
+                v = d * (dot(q, v1v0))
+                t = d * (dot(-n, rov0))
+                if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
+                    t = -1.0
+                # return (t, u, v)
+                return t
 
+            @numba.njit("int32(f4[:],f4[:],f4[:,:])")
+            def intersect_ray(ro, rda, vrt):
                 c = 500.0
                 n = -1
-                for i in range(len(vrt) // 9):
-                    iv = i * 9
-                    rcast = tri_intersect(
-                        ro,
-                        rd,
-                        np.array([vrt[iv + 0], vrt[iv + 1], vrt[iv + 2]]),
-                        np.array([vrt[iv + 3], vrt[iv + 4], vrt[iv + 5]]),
-                        np.array([vrt[iv + 6], vrt[iv + 7], vrt[iv + 8]]),
-                    )
-                    if rcast[0] < c and rcast[0] > 0.0:
-                        c = rcast[0]
+                for i in range(len(vrt) // 3):
+                    iv = i * 3
+                    rcast = tri_intersect(ro, rda, vrt[iv], vrt[iv + 1], vrt[iv + 2])
+                    if rcast < c and rcast > 0.0:
+                        c = rcast
                         n = i
-                return (c, n)
+                return n
+
+            # this crashes
+            # @numba.njit('void(f4[:],f4[:],f4[:,:],f4[:,:],f4[:,:,:],f4[:,:])')
+            @numba.guvectorize(
+                ["(f4[:],f4[:],f4[:,:],f4[:,:],f4[:,:,:],f4[:,:])"],
+                "(n),(n),(f,n),(v,n),(width,height,n)->(width,height)",
+                target="parallel",
+                nopython=True,
+            )
+            def raytrace_jit(rda, sd, norms, vrt, roa, img):
+                for x in range(img.shape[0]):
+                    for y in range(img.shape[1]):
+                        r = intersect_ray(roa[x, y], rda, vrt)
+                        img[x, y] = dot(norms[r], sd) if r >= 0 else 0.0
+
+            datatype = np.float32
 
             # rays
-            rd = np.array([0.0, 1.0, 0.0])
-            ro = np.empty((image.shape[0], image.shape[1], 3))
+            rd = np.array([0.0, 1.0, 0.0], dtype=datatype)
+            ro = np.empty((image.shape[0], image.shape[1], 3), dtype=datatype)
             w, h = image.shape[0], image.shape[1]
             for x in range(image.shape[0]):
                 for y in range(image.shape[1]):
@@ -999,7 +1014,7 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
                     ro[x, y, 2] = x * 2 / w - 1.0
 
             # mesh
-            verts = np.zeros((len(bm.faces), 3, 3))
+            verts = np.zeros((len(bm.faces), 3, 3), dtype=datatype)
             for fi, f in enumerate(bm.faces):
                 vv = f.verts
                 verts[fi] = [i.co for i in vv]
@@ -1008,26 +1023,22 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
                 assert v1v0.length > 0.0
                 assert v2v0.length > 0.0
 
-            verts = verts.reshape((verts.shape[0] * 3 * 3))
             bm.faces.ensure_lookup_table()
 
-            sun_direction = mu.Vector([0.5, -0.5, 0.5]).normalized()
-            print(image.shape, verts.shape)
-            for x in range(image.shape[0]):
-                print(x)
-                for y in range(image.shape[1]):
-                    r = intersect_ray(ro[x, y], rd, verts)
-                    c = 0.0
-                    if r[1] >= 0:
-                        norm = bm.faces[r[1]].normal
-                        c = norm.dot(sun_direction)
-                        if c < 0.0:
-                            c = 0.0
+            verts = verts.reshape((verts.shape[0] * 3, 3))
+            sun_direction = np.array(mu.Vector([0.5, -0.5, 0.5]).normalized(), dtype=datatype)
+            normals = np.array(
+                [np.array(i.normal, dtype=datatype) for i in bm.faces], dtype=datatype
+            )
 
-                    image[x, y, 0] = c
-                    image[x, y, 1] = c
-                    image[x, y, 2] = c
-                    image[x, y, 3] = 1.0
+            print(image.shape, verts.shape, verts.dtype)
+            result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
+
+            raytrace_jit(rd, sun_direction, normals, verts, ro, result)
+
+            image[:, :, 0] = result
+            image[:, :, 1] = result
+            image[:, :, 2] = result
 
             bm.free()
             return image
