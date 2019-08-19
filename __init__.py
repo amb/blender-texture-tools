@@ -945,8 +945,8 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
             # rays
             rays = np.empty((image.shape[0], image.shape[1], 2, 3), dtype=datatype)
             w, h = image.shape[0], image.shape[1]
-            for x in range(image.shape[0]):
-                for y in range(image.shape[1]):
+            for x in range(w):
+                for y in range(h):
                     # ray origin
                     rays[x, y, 0, 0] = y * 2 / h - 1.0
                     rays[x, y, 0, 1] = -5.0
@@ -983,7 +983,7 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
             # )
 
             print(image.shape, rays.shape, tris.shape, rays.dtype)
-            result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
+            # result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
 
             def rt_nb(do_a_jit=True):
                 import numba
@@ -1054,117 +1054,15 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
                 # in: rays, tris
                 # out: distance, u, v, face index
 
-                # import bgl
-                import moderngl
+                from .bpy_amb import raycast
+                import importlib
+                importlib.reload(raycast)
 
-                # print("OpenGL supported version (by Blender):", bgl.glGetString(bgl.GL_VERSION))
-                ctx = moderngl.create_context(require=430)
-                # print("GL context version code:", ctx.version_code)
-                assert ctx.version_code >= 430
-                # print(
-                #     "Compute max work group size:",
-                #     ctx.info["GL_MAX_COMPUTE_WORK_GROUP_SIZE"],
-                #     end="\n\n",
-                # )
+                rc = raycast.Raycaster(tris)
+                rw = rays.shape[0]
+                res = rc.cast(rays.reshape((rw * rw, 2, 3)))
 
-                basic_shader = """
-                #version 430
-                #define TILE_WIDTH 8
-                #define TILE_HEIGHT 8
-
-                const ivec2 tileSize = ivec2(TILE_WIDTH, TILE_HEIGHT);
-
-                layout(local_size_x=TILE_WIDTH, local_size_y=TILE_HEIGHT) in;
-
-                layout(binding=0) writeonly buffer out_0 { vec4 outp[]; };
-
-                layout(binding=1) readonly buffer Tris { float tris[]; };
-                layout(binding=2) readonly buffer Rays { float rays[]; };
-
-                uniform uint img_size;
-                uniform uint tris_size;
-
-                vec3 tri_isec2(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2) {
-                    vec3 v1v0 = v1 - v0;
-                    vec3 v2v0 = v2 - v0;
-                    vec3 rov0 = ro - v0;
-                    vec3 n = cross(v1v0, v2v0);
-                    vec3 q = cross(rov0, rd);
-                    float rdn = dot(rd, n);
-                    //if (rdn == 0.0) return -1.0;
-                    float d = 1.0 / rdn;
-                    float u = d * (dot(-q, v2v0));
-                    float v = d * (dot(q, v1v0));
-                    float t = d * (dot(-n, rov0));
-                    if (u < 0.0 || u > 1.0 || v < 0.0 || u + v > 1.0) t = -1.0;
-                    return vec3(t, u, v);
-                }
-
-                void main() {
-                    uint tx = gl_GlobalInvocationID.x;
-                    uint ty = gl_GlobalInvocationID.y;
-                    uint loc = tx + ty * img_size;
-
-                    const float maxdist = 10000.0;
-
-                    float outc = 0.0;
-
-                    vec3 orig = vec3(rays[loc*6+0], rays[loc*6+1], rays[loc*6+2]);
-                    vec3 dir =  vec3(rays[loc*6+3], rays[loc*6+4], rays[loc*6+5]);
-
-                    uint face = -1;
-                    vec4 res = vec4(maxdist, 0.0, 0.0, 0.0);
-                    vec3 normal = vec3(0.0, 0.0, 0.0);
-                    for (uint i=0; i<tris_size; i++) {
-                        vec3 v0 = vec3(tris[i*9+0], tris[i*9+1], tris[i*9+2]);
-                        vec3 v1 = vec3(tris[i*9+3], tris[i*9+4], tris[i*9+5]);
-                        vec3 v2 = vec3(tris[i*9+6], tris[i*9+7], tris[i*9+8]);
-                        vec3 rc = tri_isec2(orig, dir, v0, v1, v2);
-                        if (rc[0] > 0.0 && rc[0] < res[0]) {
-                            res[0] = rc[0];
-                            res[1] = rc[1];
-                            res[2] = rc[2];
-                            res[3] = float(i);
-
-                            // calc face normal
-                            // vec3 va = v0-v1;
-                            // vec3 vb = v0-v2;
-                            // normal = normalize(cross(va, vb));
-                        }
-                    }
-
-                    // can only handle 16777216 polys because of floating point conversion error
-
-                    // distance, u, v, index
-                    outp[loc] = res;
-                }
-                """
-
-                in_buffer = np.empty((rays.shape[0], rays.shape[1], 4), dtype=np.float32)
-                compute_shader = ctx.compute_shader(basic_shader)
-
-                print("start compute")
-
-                out_buffer = ctx.buffer(in_buffer)
-                out_buffer.bind_to_storage_buffer(0)
-
-                tri_buffer = ctx.buffer(tris)
-                tri_buffer.bind_to_storage_buffer(1)
-                assert len(tris) < 16777217
-                compute_shader.get("tris_size", 5).value = len(tris)
-
-                ray_buffer = ctx.buffer(rays)
-                ray_buffer.bind_to_storage_buffer(2)
-
-                compute_shader.get("img_size", 5).value = rays.shape[0]
-                print("start run")
-                compute_shader.run(group_x=rays.shape[0] // 8, group_y=rays.shape[1] // 8)
-                print("end run")
-                print("end compute")
-
-                return np.frombuffer(out_buffer.read(), dtype=np.float32).reshape(
-                    (*in_buffer.shape)
-                )
+                return res.reshape((rw, rw, 4))
 
             result = rt_glcompute()[:, :, 0]
             result = np.where(result < 50.0, (result - 4.0) / 2.0, 1.0)
