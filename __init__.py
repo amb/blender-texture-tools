@@ -960,18 +960,27 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
             tris = np.zeros((len(bm.faces), 3, 3), dtype=datatype)
             for fi, f in enumerate(bm.faces):
                 vv = f.verts
-                tris[fi] = [i.co for i in vv]
-                v1v0 = vv[1].co - vv[0].co
-                v2v0 = vv[2].co - vv[0].co
-                assert v1v0.length > 0.0
-                assert v2v0.length > 0.0
+                # tris[fi] = [i.co for i in vv]
+                tris[fi][0][0] = vv[0].co[0]
+                tris[fi][0][1] = vv[0].co[1]
+                tris[fi][0][2] = vv[0].co[2]
+                tris[fi][1][0] = vv[1].co[0]
+                tris[fi][1][1] = vv[1].co[1]
+                tris[fi][1][2] = vv[1].co[2]
+                tris[fi][2][0] = vv[2].co[0]
+                tris[fi][2][1] = vv[2].co[1]
+                tris[fi][2][2] = vv[2].co[2]
+                # v1v0 = vv[1].co - vv[0].co
+                # v2v0 = vv[2].co - vv[0].co
+                # assert v1v0.length > 0.0
+                # assert v2v0.length > 0.0
 
             bm.faces.ensure_lookup_table()
 
-            sun_direction = np.array(mu.Vector([0.5, -0.5, 0.5]).normalized(), dtype=datatype)
-            normals = np.array(
-                [np.array(i.normal, dtype=datatype) for i in bm.faces], dtype=datatype
-            )
+            # sun_direction = np.array(mu.Vector([0.5, -0.5, 0.5]).normalized(), dtype=datatype)
+            # normals = np.array(
+            #     [np.array(i.normal, dtype=datatype) for i in bm.faces], dtype=datatype
+            # )
 
             print(image.shape, rays.shape, tris.shape, rays.dtype)
             result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
@@ -1043,20 +1052,20 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
 
             def rt_glcompute():
                 # in: rays, tris
-                # out: result
+                # out: distance, u, v, face index
 
-                import bgl
+                # import bgl
                 import moderngl
 
-                print("OpenGL supported version (by Blender):", bgl.glGetString(bgl.GL_VERSION))
+                # print("OpenGL supported version (by Blender):", bgl.glGetString(bgl.GL_VERSION))
                 ctx = moderngl.create_context(require=430)
-                print("GL context version code:", ctx.version_code)
+                # print("GL context version code:", ctx.version_code)
                 assert ctx.version_code >= 430
-                print(
-                    "Compute max work group size:",
-                    ctx.info["GL_MAX_COMPUTE_WORK_GROUP_SIZE"],
-                    end="\n\n",
-                )
+                # print(
+                #     "Compute max work group size:",
+                #     ctx.info["GL_MAX_COMPUTE_WORK_GROUP_SIZE"],
+                #     end="\n\n",
+                # )
 
                 basic_shader = """
                 #version 430
@@ -1066,16 +1075,16 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
                 const ivec2 tileSize = ivec2(TILE_WIDTH, TILE_HEIGHT);
 
                 layout(local_size_x=TILE_WIDTH, local_size_y=TILE_HEIGHT) in;
-                layout(binding=0) writeonly buffer out_0 { float outp[]; };
-                layout(std430, binding=1) readonly buffer Tris { float tris[]; };
-                layout(std430, binding=2) readonly buffer Rays { float rays[]; };
+
+                layout(binding=0) writeonly buffer out_0 { vec4 outp[]; };
+
+                layout(binding=1) readonly buffer Tris { float tris[]; };
+                layout(binding=2) readonly buffer Rays { float rays[]; };
 
                 uniform uint img_size;
                 uniform uint tris_size;
 
-                uniform vec3 sun_direction;
-
-                float tri_isec2(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2) {
+                vec3 tri_isec2(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2) {
                     vec3 v1v0 = v1 - v0;
                     vec3 v2v0 = v2 - v0;
                     vec3 rov0 = ro - v0;
@@ -1088,8 +1097,7 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
                     float v = d * (dot(q, v1v0));
                     float t = d * (dot(-n, rov0));
                     if (u < 0.0 || u > 1.0 || v < 0.0 || u + v > 1.0) t = -1.0;
-                    //return vec3(t, u, v)
-                    return t;
+                    return vec3(t, u, v);
                 }
 
                 void main() {
@@ -1097,63 +1105,69 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
                     uint ty = gl_GlobalInvocationID.y;
                     uint loc = tx + ty * img_size;
 
+                    const float maxdist = 10000.0;
+
                     float outc = 0.0;
 
                     vec3 orig = vec3(rays[loc*6+0], rays[loc*6+1], rays[loc*6+2]);
                     vec3 dir =  vec3(rays[loc*6+3], rays[loc*6+4], rays[loc*6+5]);
 
                     uint face = -1;
-                    float dist = 10000.0;
+                    vec4 res = vec4(maxdist, 0.0, 0.0, 0.0);
                     vec3 normal = vec3(0.0, 0.0, 0.0);
                     for (uint i=0; i<tris_size; i++) {
                         vec3 v0 = vec3(tris[i*9+0], tris[i*9+1], tris[i*9+2]);
                         vec3 v1 = vec3(tris[i*9+3], tris[i*9+4], tris[i*9+5]);
                         vec3 v2 = vec3(tris[i*9+6], tris[i*9+7], tris[i*9+8]);
-                        float rc = tri_isec2(orig, dir, v0, v1, v2);
-                        if (rc > 0.0 && rc < dist) {
-                            dist = rc;
-                            face = i;
+                        vec3 rc = tri_isec2(orig, dir, v0, v1, v2);
+                        if (rc[0] > 0.0 && rc[0] < res[0]) {
+                            res[0] = rc[0];
+                            res[1] = rc[1];
+                            res[2] = rc[2];
+                            res[3] = float(i);
 
-                            vec3 va = v0-v1;
-                            vec3 vb = v0-v2;
-                            normal = normalize(cross(va, vb));
+                            // calc face normal
+                            // vec3 va = v0-v1;
+                            // vec3 vb = v0-v2;
+                            // normal = normalize(cross(va, vb));
                         }
                     }
 
-                    if (face > 0) {
-                        outp[loc] = dot(sun_direction, normal);
-                    } else {
-                        outp[loc] = 0.0;
-                    }
+                    // can only handle 16777216 polys because of floating point conversion error
+
+                    // distance, u, v, index
+                    outp[loc] = res;
                 }
                 """
 
-                sourcepixels = np.empty((image.shape[0], image.shape[1]), dtype=np.float32)
+                in_buffer = np.empty((rays.shape[0], rays.shape[1], 4), dtype=np.float32)
                 compute_shader = ctx.compute_shader(basic_shader)
 
                 print("start compute")
-                out_buffer = ctx.buffer(sourcepixels)
+
+                out_buffer = ctx.buffer(in_buffer)
                 out_buffer.bind_to_storage_buffer(0)
 
                 tri_buffer = ctx.buffer(tris)
                 tri_buffer.bind_to_storage_buffer(1)
+                assert len(tris) < 16777217
                 compute_shader.get("tris_size", 5).value = len(tris)
-                print(len(tris))
 
                 ray_buffer = ctx.buffer(rays)
                 ray_buffer.bind_to_storage_buffer(2)
 
-                compute_shader.get("img_size", 5).value = image.shape[0]
-                compute_shader.get("sun_direction", 5).value = (*sun_direction,)
-                compute_shader.run(group_x=image.shape[0] // 8, group_y=image.shape[1] // 8)
+                compute_shader.get("img_size", 5).value = rays.shape[0]
+                print("start run")
+                compute_shader.run(group_x=rays.shape[0] // 8, group_y=rays.shape[1] // 8)
+                print("end run")
                 print("end compute")
 
                 return np.frombuffer(out_buffer.read(), dtype=np.float32).reshape(
-                    (*image.shape[:2])
+                    (*in_buffer.shape)
                 )
 
-            result = rt_glcompute()
-            print(np.min(result), np.max(result))
+            result = rt_glcompute()[:, :, 0]
+            result = np.where(result < 50.0, (result - 4.0) / 2.0, 1.0)
 
             image[:, :, 0] = result
             image[:, :, 1] = result
