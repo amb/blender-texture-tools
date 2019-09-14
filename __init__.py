@@ -1056,6 +1056,7 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
 
                 from .bpy_amb import raycast
                 import importlib
+
                 importlib.reload(raycast)
 
                 rc = raycast.Raycaster(tris)
@@ -1064,12 +1065,13 @@ class RenderObject_IOP(image_ops.ImageOperatorGenerator):
 
                 return res.reshape((rw, rw, 4))
 
-            result = rt_glcompute()[:, :, 0]
-            result = np.where(result < 50.0, (result - 4.0) / 2.0, 1.0)
+            result = rt_glcompute()
+            dist = result[:, :, 0]
+            dist = np.where(dist < 50.0, (dist - 4.0) / 2.0, 1.0)
 
-            image[:, :, 0] = result
-            image[:, :, 1] = result
-            image[:, :, 2] = result
+            image[:, :, 0] = dist
+            image[:, :, 1] = result[:, :, 1]
+            image[:, :, 2] = result[:, :, 2]
 
             bm.free()
             return image
@@ -1405,6 +1407,49 @@ class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
             return image
 
         self.payload = _pl2
+
+
+class Base64_16x16_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "base64"
+        self.info = "Base64"
+        self.category = "Debug"
+
+        def _pl(self, image, context):
+            print(image.shape)
+            if image.shape[0] != 16 or image.shape[0] != 16:
+                print("Wrong image size.")
+                return image
+
+            # to icon text
+            base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            icon = []
+            for v in image.reshape((image.shape[0] * image.shape[1], 4)):
+                icon.append(base64[int(v[0] * 64)])
+                icon.append(base64[int(v[1] * 64)])
+                icon.append(base64[int(v[2] * 64)])
+
+            icon_text = "".join(icon)
+            assert len(icon_text) == 768
+            print(icon_text)
+
+            # to image from icon text
+            to_value = {v: i for i, v in enumerate(base64)}
+            values = []
+            counter = 0
+            for v in icon_text:
+                values.append(to_value[v] / 64)
+                counter += 1
+                if counter == 3:
+                    counter = 0
+                    values.append(1.0)
+
+            # image = image.reshape((image.shape[0] * image.shape[1], 4))
+            image = np.array(values, dtype=image.dtype).reshape(image.shape)
+
+            return image
+
+        self.payload = _pl
 
 
 class MGLRender_IOP(image_ops.ImageOperatorGenerator):
