@@ -59,7 +59,7 @@ class ImageOperator(master_ops.MacroOperator):
     def execute(self, context):
 
         image = get_teximage(bpy.context)
-        sourcepixels = np.float32(np.array(image.pixels).reshape(image.size[0], image.size[1], 4))
+        sourcepixels = np.float32(np.array(image.pixels).reshape(image.size[1], image.size[0], 4))
         with utils.Profile_this():
             sourcepixels = self.payload(sourcepixels, context)
         image.pixels = sourcepixels.reshape((image.size[0] * image.size[1] * 4,))
