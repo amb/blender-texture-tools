@@ -113,6 +113,19 @@ def hi_pass(pix, s, intensity):
     return pix
 
 
+def hgram_equalize(pix, intensity, atest):
+    old = pix.copy()
+    aw = np.argwhere(pix[..., 3] > atest)
+    r = pix[..., 0][aw[:, 0], aw[:, 1]]
+    g = pix[..., 1][aw[:, 0], aw[:, 1]]
+    b = pix[..., 2][aw[:, 0], aw[:, 1]]
+    pix[..., 0][aw[:, 0], aw[:, 1]] = np.sort(r).searchsorted(r)
+    pix[..., 1][aw[:, 0], aw[:, 1]] = np.sort(g).searchsorted(g)
+    pix[..., 2][aw[:, 0], aw[:, 1]] = np.sort(b).searchsorted(b)
+    pix[..., :3] /= np.max(pix[..., :3])
+    return old * (1.0 - intensity) + pix * intensity
+
+
 def bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
     # gaussian
     gsi = lambda r2, sigma: numpy.exp(-0.5 * r2 / sigma ** 2)
@@ -156,16 +169,6 @@ def bilateral_filter(pix, s, intensity):
     pix[..., 2] = bilateral(pix[..., 2], s, intensity)
 
     return pix
-
-
-# def fast_blur(tpx, s):
-#     d = 2 ** s
-#     ystep = tpx.shape[1]
-#     while d > 1:
-#         tpx = (tpx * 2 + numpy.roll(tpx, -d * 4) + numpy.roll(tpx, d * 4)) / 4
-#         tpx = (tpx * 2 + numpy.roll(tpx, -d * (ystep * 4)) + numpy.roll(tpx, d * (ystep * 4))) / 4
-#         d = int(d / 2)
-#     return tpx
 
 
 # def normals_simple(self, intensity):
@@ -258,13 +261,15 @@ class Bilateral_IOP(image_ops.ImageOperatorGenerator):
         )
 
 
-class HistogramQ_IOP(image_ops.ImageOperatorGenerator):
+class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.01, default=0.1)
-        self.prefix = "histogram_q"
-        self.info = "Histogram quantization"
+        self.props["intensity"] = bpy.props.FloatProperty(
+            name="Intensity", min=0.0, max=1.0, default=1.0
+        )
+        self.prefix = "histogram_eq"
+        self.info = "Histogram equalization"
         self.category = "Filter"
-        self.payload = lambda self, image, context: image
+        self.payload = lambda self, image, context: hgram_equalize(image, self.intensity, 0.5)
 
 
 class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
