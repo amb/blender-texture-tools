@@ -47,14 +47,9 @@ def convolution(ssp, intens, sfil):
     tpx = numpy.zeros(ssp.shape, dtype=float)
     ysz, xsz = sfil.shape[0], sfil.shape[1]
     ystep = int(4 * ssp.shape[1])
-    # norms = 0
     for y in range(ysz):
         for x in range(xsz):
             tpx += numpy.roll(ssp, (x - xsz // 2) * 4 + (y - ysz // 2) * ystep) * sfil[y, x]
-            # norms += sfil[y, x]
-    # if norms > 0:
-    #     tpx /= norms
-    # return ssp + (tpx - ssp) * intens
     return tpx
 
 
@@ -118,34 +113,26 @@ def hi_pass(pix, s, intensity):
     return pix
 
 
-def _bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
-    # make a simple Gaussian function taking the squared radius
-    gsi = lambda r2, sigma: (numpy.exp(-0.5 * r2 / sigma ** 2) * 3) * 1.0 / 3.0
-
-    # define the window width to be the 3 time the spatial std. dev. to
-    # be sure that most of the spatial kernel is actually captured
-    win_width = int(3 * sigma_s + 1)
-
-    # initialize the results and sum of weights to very small values for
-    # numerical stability. not strictly necessary but helpful to avoid
-    # wild values with pathological choices of parameters
+def bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
+    # gaussian
+    gsi = lambda r2, sigma: numpy.exp(-0.5 * r2 / sigma ** 2)
+    win_width = int(np.ceil(3 * sigma_s))
     wgt_sum = numpy.ones(img_in.shape) * eps
     result = img_in * eps
 
     # TODO: mix the steps to remove artifacts
-
     for shft_x in range(-win_width, win_width + 1):
         shft_y = 0
-        w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
         off = numpy.roll(img_in, [shft_y, shft_x], axis=[0, 1])
+        w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
         tw = w * gsi((off - img_in) ** 2, sigma_v)
         result += off * tw
         wgt_sum += tw
 
     for shft_y in range(-win_width, win_width + 1):
         shft_x = 0
-        w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
         off = numpy.roll(img_in, [shft_y, shft_x], axis=[0, 1])
+        w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
         tw = w * gsi((off - img_in) ** 2, sigma_v)
         result += off * tw
         wgt_sum += tw
@@ -155,18 +142,18 @@ def _bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
 
 
 def bilateral_filter(pix, s, intensity):
-    # remove highlites
+    # multiply by alpha
     pix[..., 0] *= pix[..., 3]
     pix[..., 1] *= pix[..., 3]
     pix[..., 2] *= pix[..., 3]
 
     print("R")
     # image, spatial, range
-    pix[..., 0] = _bilateral(pix[..., 0], s, intensity)
+    pix[..., 0] = bilateral(pix[..., 0], s, intensity)
     print("G")
-    pix[..., 1] = _bilateral(pix[..., 1], s, intensity)
+    pix[..., 1] = bilateral(pix[..., 1], s, intensity)
     print("B")
-    pix[..., 2] = _bilateral(pix[..., 2], s, intensity)
+    pix[..., 2] = bilateral(pix[..., 2], s, intensity)
 
     return pix
 
@@ -269,6 +256,63 @@ class Bilateral_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: bilateral_filter(
             image, self.width, self.intensity
         )
+
+
+class HistogramQ_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.01, default=0.1)
+        self.prefix = "histogram_q"
+        self.info = "Histogram quantization"
+        self.category = "Filter"
+        self.payload = lambda self, image, context: image
+
+
+class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
+    """Image seamless generator operator"""
+
+    # TODO: the smoothing is not complete, it goes only one way
+    def generate(self):
+        self.prefix = "gimp_seamless"
+        self.info = "Gimp style seamless image operation"
+        self.category = "Filter"
+
+        def gimpify(self, image, context):
+            pixels = numpy.copy(image)
+            xs, ys = image.shape[1], image.shape[0]
+            image = numpy.roll(image, xs * 2 + xs * 4 * (ys // 2))
+
+            sxs = xs // 2
+            sys = ys // 2
+
+            # generate the mask
+            imask = numpy.zeros((pixels.shape[0], pixels.shape[1]), dtype=float)
+            for y in range(0, sys):
+                zy0 = y / sys + 0.001
+                zy1 = 1 - y / sys + 0.001
+                for x in range(0, sxs):
+                    zx0 = 1 - x / sxs + 0.001
+                    imask[y, x] = 1 - zy0 / zx0
+                    zx1 = x / sxs + 0.001
+                    imask[y, x] = numpy.maximum((1 - zx1 / zy1), imask[y, x])
+
+            imask[imask < 0] = 0
+
+            # copy the data into the three remaining corners
+            imask[0 : sys + 1, sxs : xs - 1] = numpy.fliplr(imask[0 : sys + 1, 0 : sxs - 1])
+            imask[-sys:ys, 0:sxs] = numpy.flipud(imask[0:sys, 0:sxs])
+            imask[-sys:ys, sxs : xs - 1] = numpy.flipud(imask[0:sys, sxs : xs - 1])
+            imask[sys, :] = imask[sys - 1, :]  # center line
+
+            # apply mask
+            amask = numpy.zeros(pixels.shape, dtype=float)
+            amask[:, :, 0] = imask
+            amask[:, :, 1] = imask
+            amask[:, :, 2] = imask
+            amask[:, :, 3] = imask
+
+            return amask * image + (numpy.ones(amask.shape) - amask) * pixels
+
+        self.payload = gimpify
 
 
 # class Normals_IOP(image_ops.ImageOperatorGenerator):
@@ -446,54 +490,6 @@ class Bilateral_IOP(image_ops.ImageOperatorGenerator):
 #             return image
 
 #         self.payload = _pl
-
-
-# class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
-#     # TODO: the smoothing is not complete, it goes only one way
-#     """Image seamless generator operator"""
-
-#     def generate(self):
-#         self.prefix = "gimp_seamless"
-#         self.info = "Gimp style seamless image operation"
-#         self.category = "Filter"
-
-#         def gimpify(self, image, context):
-#             pixels = numpy.copy(image)
-#             xs, ys = image.shape[0], image.shape[1]
-#             image = numpy.roll(image, xs * 2 + xs * 4 * (ys // 2))
-
-#             sxs = xs // 2
-#             sys = ys // 2
-
-#             # generate the mask
-#             imask = numpy.zeros((pixels.shape[0], pixels.shape[1]), dtype=float)
-#             for y in range(0, sys):
-#                 zy0 = y / sys + 0.001
-#                 zy1 = 1 - y / sys + 0.001
-#                 for x in range(0, sxs):
-#                     zx0 = 1 - x / sxs + 0.001
-#                     imask[y, x] = 1 - zy0 / zx0
-#                     zx1 = x / sxs + 0.001
-#                     imask[y, x] = numpy.maximum((1 - zx1 / zy1), imask[y, x])
-
-#             imask[imask < 0] = 0
-
-#             # copy the data into the three remaining corners
-#             imask[0 : sys + 1, sxs : xs - 1] = numpy.fliplr(imask[0 : sys + 1, 0 : sxs - 1])
-#             imask[-sys:ys, 0:sys] = numpy.flipud(imask[0:sys, 0:sxs])
-#             imask[-sys:ys, sxs : xs - 1] = numpy.flipud(imask[0:sys, sxs : xs - 1])
-#             imask[sys, :] = imask[sys - 1, :]  # center line
-
-#             # apply mask
-#             amask = numpy.zeros(pixels.shape, dtype=float)
-#             amask[:, :, 0] = imask
-#             amask[:, :, 1] = imask
-#             amask[:, :, 2] = imask
-#             amask[:, :, 3] = 1.0
-
-#             return amask * image + (numpy.ones(amask.shape) - amask) * pixels
-
-#         self.payload = gimpify
 
 
 register, unregister = image_ops.create(locals())
