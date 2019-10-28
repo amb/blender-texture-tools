@@ -25,8 +25,8 @@ bl_info = {
     "location": "Image Editor > Side Panel > Image",
     "documentation": "http://blenderartists.org/forum/"
     "showthread.php?364409-WIP-Seamless-texture-patching-addon",
-    "version": (0, 1, 17),
-    "blender": (2, 80, 0),
+    "version": (0, 1, 18),
+    "blender": (2, 81, 0),
 }
 
 import numpy
@@ -183,6 +183,7 @@ def normals_simple(pix, s, intensity):
     pix = normalize(gaussian(grayscale(pix), s, 1.0))
     sshape = pix.shape
 
+    # extract x and y deltas
     px = sobel_x(pix, 1.0)
     px[:, :, 2] = px[:, :, 2] * intensity
     px[:, :, 1] = 0
@@ -193,15 +194,17 @@ def normals_simple(pix, s, intensity):
     py[:, :, 1] = 1
     py[:, :, 0] = 0
 
+    # find the imagined approximate surface normal
     arr = numpy.cross(px[:, :, :3], py[:, :, :3])
 
-    # vec *= 1/len(vec)
+    # normalization: vec *= 1/len(vec)
     m = 1.0 / numpy.sqrt(arr[:, :, 0] ** 2 + arr[:, :, 1] ** 2 + arr[:, :, 2] ** 2)
     arr[..., 0] *= m
     arr[..., 1] *= m
     arr[..., 2] *= m
     vectors = arr
 
+    # normals format
     retarr = numpy.zeros(sshape)
     retarr[:, :, 0] = 0.5 - vectors[:, :, 0]
     retarr[:, :, 1] = vectors[:, :, 1] + 0.5
