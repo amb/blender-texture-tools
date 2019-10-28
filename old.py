@@ -1298,3 +1298,155 @@ def compute_shading():
 #             return image
 
 #         self.payload = _pl
+
+
+# class RenderObject_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         self.props["object"] = bpy.props.PointerProperty(name="Target", type=bpy.types.Object)
+
+#         self.prefix = "render_object"
+#         self.info = "Simple render of selected object"
+#         self.category = "Debug"
+
+#         def _pl(self, image, context):
+#             bm = bmesh.new()
+#             bm.from_mesh(self.object.data)
+#             bmesh.ops.triangulate(bm, faces=bm.faces[:])
+
+#             datatype = np.float32
+
+#             # rays
+#             rays = np.empty((image.shape[0], image.shape[1], 2, 3), dtype=datatype)
+#             w, h = image.shape[0], image.shape[1]
+#             for x in range(w):
+#                 for y in range(h):
+#                     # ray origin
+#                     rays[x, y, 0, 0] = y * 2 / h - 1.0
+#                     rays[x, y, 0, 1] = -5.0
+#                     rays[x, y, 0, 2] = x * 2 / w - 1.0
+#                     # ray direction
+#                     rays[x, y, 1, 0] = 0.0
+#                     rays[x, y, 1, 1] = 1.0
+#                     rays[x, y, 1, 2] = 0.0
+
+#             # mesh
+#             tris = np.zeros((len(bm.faces), 3, 3), dtype=datatype)
+#             for fi, f in enumerate(bm.faces):
+#                 vv = f.verts
+#                 # tris[fi] = [i.co for i in vv]
+#                 tris[fi][0][0] = vv[0].co[0]
+#                 tris[fi][0][1] = vv[0].co[1]
+#                 tris[fi][0][2] = vv[0].co[2]
+#                 tris[fi][1][0] = vv[1].co[0]
+#                 tris[fi][1][1] = vv[1].co[1]
+#                 tris[fi][1][2] = vv[1].co[2]
+#                 tris[fi][2][0] = vv[2].co[0]
+#                 tris[fi][2][1] = vv[2].co[1]
+#                 tris[fi][2][2] = vv[2].co[2]
+#                 # v1v0 = vv[1].co - vv[0].co
+#                 # v2v0 = vv[2].co - vv[0].co
+#                 # assert v1v0.length > 0.0
+#                 # assert v2v0.length > 0.0
+
+#             bm.faces.ensure_lookup_table()
+
+#             # sun_direction = np.array(mu.Vector([0.5, -0.5, 0.5]).normalized(), dtype=datatype)
+#             # normals = np.array(
+#             #     [np.array(i.normal, dtype=datatype) for i in bm.faces], dtype=datatype
+#             # )
+
+#             print(image.shape, rays.shape, tris.shape, rays.dtype)
+#             # result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
+
+#             def rt_nb(do_a_jit=True):
+#                 import numba
+
+#                 def intersect_ray(ro, rda, vrt):
+#                     def cross(a, b):
+#                         return np.array(
+#                             [
+#                                 a[1] * b[2] - a[2] * b[1],
+#                                 a[2] * b[0] - a[0] * b[2],
+#                                 a[0] * b[1] - a[1] * b[0],
+#                             ]
+#                         )
+
+#                     def dot(a, b):
+#                         return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+#                     def tri_intersect(ro, rd, v0, v1, v2):
+#                         v1v0 = v1 - v0
+#                         v2v0 = v2 - v0
+#                         rov0 = ro - v0
+#                         n = cross(v1v0, v2v0)
+#                         q = cross(rov0, rd)
+#                         rdn = dot(rd, n)
+#                         if rdn == 0.0:
+#                             return -1.0
+#                             # return (-1.0, 0.0, 0.0)
+#                         d = 1.0 / rdn
+#                         u = d * (dot(-q, v2v0))
+#                         v = d * (dot(q, v1v0))
+#                         t = d * (dot(-n, rov0))
+#                         if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
+#                             t = -1.0
+#                         # return (t, u, v)
+#                         return t
+
+#                     c = 1.0e10
+#                     n = -1
+#                     for i in range(len(vrt) // 3):
+#                         iv = i * 3
+#                         rcast = tri_intersect(ro, rda, vrt[iv], vrt[iv + 1], vrt[iv + 2])
+#                         if rcast < c and rcast > 0.0:
+#                             c = rcast
+#                             n = i
+
+#                     return n
+
+#                 if do_a_jit:
+#                     intersect_ray = numba.njit(parallel=False)(intersect_ray)
+
+#                 result = np.empty((image.shape[0], image.shape[1]), dtype=np.float32)
+
+#                 def rnd_res(ro, rd, verts, normals, sun_direction, res):
+#                     for x in range(res.shape[0]):
+#                         print(x)
+#                         for y in numba.prange(res.shape[1]):
+#                             r = intersect_ray(ro[x, y], rd, verts)
+#                             res[x, y] = np.dot(normals[r], sun_direction) if r >= 0 else 0.0
+
+#                 rnd_res(ro, rd, verts, normals, sun_direction, result)
+
+#                 return result
+
+#             # numba is aboug 20x speedup with single core CPU
+#             # result = rt_nb(do_a_jit=True)
+
+#             def rt_glcompute():
+#                 # in: rays, tris
+#                 # out: distance, u, v, face index
+
+#                 from .bpy_amb import raycast
+#                 import importlib
+
+#                 importlib.reload(raycast)
+
+#                 rc = raycast.Raycaster(tris)
+#                 rw = rays.shape[0]
+#                 res = rc.cast(rays.reshape((rw * rw, 2, 3)))
+
+#                 return res.reshape((rw, rw, 4))
+
+#             result = rt_glcompute()
+#             dist = result[:, :, 0]
+#             dist = np.where(dist < 50.0, (dist - 4.0) / 2.0, 1.0)
+
+#             image[:, :, 0] = dist
+#             image[:, :, 1] = result[:, :, 1]
+#             image[:, :, 2] = result[:, :, 2]
+
+#             bm.free()
+#             return image
+
+#         self.payload = _pl

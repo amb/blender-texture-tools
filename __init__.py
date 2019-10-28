@@ -33,11 +33,8 @@ import numpy
 
 np = numpy
 import bpy
-import copy
 from . import image_ops
 import importlib
-import bmesh
-import mathutils as mu
 
 importlib.reload(image_ops)
 
@@ -91,6 +88,15 @@ def sobel_y(pix, intensity):
     return convolution(pix, intensity, gy)
 
 
+def sobel(pix, s, intensity):
+    retarr = numpy.zeros(pix.shape)
+    retarr = sobel_x(pix, 1.0)
+    retarr += sobel_y(pix, 1.0)
+    retarr = (retarr * intensity) * 0.5 + 0.5
+    retarr[..., 3] = pix[..., 3]
+    return retarr
+
+
 def edgedetect(pix, s, intensity):
     k = numpy.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
     return convolution(pix, intensity, k) * 0.5 + 0.5
@@ -122,7 +128,9 @@ def hgram_equalize(pix, intensity, atest):
     pix[..., 0][aw[:, 0], aw[:, 1]] = np.sort(r).searchsorted(r)
     pix[..., 1][aw[:, 0], aw[:, 1]] = np.sort(g).searchsorted(g)
     pix[..., 2][aw[:, 0], aw[:, 1]] = np.sort(b).searchsorted(b)
-    pix[..., :3] /= np.max(pix[..., :3])
+    npm = np.max(pix[..., :3])
+    print(npm)
+    pix[..., :3] /= npm
     return old * (1.0 - intensity) + pix * intensity
 
 
@@ -171,45 +179,47 @@ def bilateral_filter(pix, s, intensity):
     return pix
 
 
-# def normals_simple(self, intensity):
-#     self.grayscale()
-#     sshape = self.pixels.shape
+def normals_simple(pix, s, intensity):
+    pix = normalize(gaussian(grayscale(pix), s, 1.0))
+    sshape = pix.shape
 
-#     px = self.copy().sobel_x(1.0).pixels
-#     px[:, :, 2] = px[:, :, 2] * intensity
-#     px[:, :, 1] = 0
-#     px[:, :, 0] = 1
+    px = sobel_x(pix, 1.0)
+    px[:, :, 2] = px[:, :, 2] * intensity
+    px[:, :, 1] = 0
+    px[:, :, 0] = 1
 
-#     py = self.sobel_y(1.0).pixels
-#     py[:, :, 2] = py[:, :, 2] * intensity
-#     py[:, :, 1] = 1
-#     py[:, :, 0] = 0
+    py = sobel_y(pix, 1.0)
+    py[:, :, 2] = py[:, :, 2] * intensity
+    py[:, :, 1] = 1
+    py[:, :, 0] = 0
 
-#     arr = numpy.cross(px[:, :, :3], py[:, :, :3])
+    arr = numpy.cross(px[:, :, :3], py[:, :, :3])
 
-#     # vec *= 1/len(vec)
-#     m = 1.0 / numpy.sqrt(arr[:, :, 0] ** 2 + arr[:, :, 1] ** 2 + arr[:, :, 2] ** 2)
-#     arr[..., 0] *= m
-#     arr[..., 1] *= m
-#     arr[..., 2] *= m
-#     vectors = arr
+    # vec *= 1/len(vec)
+    m = 1.0 / numpy.sqrt(arr[:, :, 0] ** 2 + arr[:, :, 1] ** 2 + arr[:, :, 2] ** 2)
+    arr[..., 0] *= m
+    arr[..., 1] *= m
+    arr[..., 2] *= m
+    vectors = arr
 
-#     retarr = numpy.zeros(sshape)
-#     retarr[:, :, 0] = 0.5 - vectors[:, :, 0]
-#     retarr[:, :, 1] = vectors[:, :, 1] + 0.5
-#     retarr[:, :, 2] = vectors[:, :, 2]
-#     retarr[:, :, 3] = 1.0
-#     self.pixels = retarr
-#     return self
-
-
-def sobel(pix, s, intensity):
-    retarr = numpy.zeros(pix.shape)
-    retarr = sobel_x(retarr, 1.0)
-    retarr += sobel_y(retarr, 1.0)
-    retarr = (retarr * intensity) * 0.5 + 0.5
-    retarr[..., 3] = 1.0
+    retarr = numpy.zeros(sshape)
+    retarr[:, :, 0] = 0.5 - vectors[:, :, 0]
+    retarr[:, :, 1] = vectors[:, :, 1] + 0.5
+    retarr[:, :, 2] = vectors[:, :, 2]
+    retarr[:, :, 3] = 1.0
     return retarr
+
+
+class Normals_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "normals"
+        self.info = "(Very rough estimate) normal map from RGB"
+        self.category = "Filter"
+        self.payload = lambda self, image, context: normals_simple(
+            image, self.width, self.intensity
+        )
 
 
 class Grayscale_IOP(image_ops.ImageOperatorGenerator):
@@ -251,13 +261,13 @@ class HiPass_IOP(image_ops.ImageOperatorGenerator):
 
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=3)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.01, default=0.1)
+        self.props["sigma_a"] = bpy.props.FloatProperty(name="Sigma A", min=0.01, default=3.0)
+        self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.1)
         self.prefix = "bilateral_filter"
         self.info = "Bilateral"
         self.category = "Filter"
         self.payload = lambda self, image, context: bilateral_filter(
-            image, self.width, self.intensity
+            image, self.sigma_a, self.sigma_b
         )
 
 
@@ -320,19 +330,6 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
         self.payload = gimpify
 
 
-# class Normals_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-#         self.prefix = "normals"
-#         self.info = "(Very rough estimate) normal map from RGB"
-#         self.category = "Filter"
-#         self.payload = (
-#             lambda self, image, context: ImageOperations(image)
-#             .normals_simple(image.pixels[:], self.intensity)
-#             .pixels
-#         )
-
-
 # class LaplacianBlend_IOP(image_ops.ImageOperatorGenerator):
 #     def generate(self):
 #         self.prefix = "laplacian_blend"
@@ -340,158 +337,6 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
 #         self.category = "Filter"
 
 #         def _pl(self, image, context):
-#             return image
-
-#         self.payload = _pl
-
-
-# class RenderObject_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.props["object"] = bpy.props.PointerProperty(name="Target", type=bpy.types.Object)
-
-#         self.prefix = "render_object"
-#         self.info = "Simple render of selected object"
-#         self.category = "Debug"
-
-#         def _pl(self, image, context):
-#             bm = bmesh.new()
-#             bm.from_mesh(self.object.data)
-#             bmesh.ops.triangulate(bm, faces=bm.faces[:])
-
-#             datatype = np.float32
-
-#             # rays
-#             rays = np.empty((image.shape[0], image.shape[1], 2, 3), dtype=datatype)
-#             w, h = image.shape[0], image.shape[1]
-#             for x in range(w):
-#                 for y in range(h):
-#                     # ray origin
-#                     rays[x, y, 0, 0] = y * 2 / h - 1.0
-#                     rays[x, y, 0, 1] = -5.0
-#                     rays[x, y, 0, 2] = x * 2 / w - 1.0
-#                     # ray direction
-#                     rays[x, y, 1, 0] = 0.0
-#                     rays[x, y, 1, 1] = 1.0
-#                     rays[x, y, 1, 2] = 0.0
-
-#             # mesh
-#             tris = np.zeros((len(bm.faces), 3, 3), dtype=datatype)
-#             for fi, f in enumerate(bm.faces):
-#                 vv = f.verts
-#                 # tris[fi] = [i.co for i in vv]
-#                 tris[fi][0][0] = vv[0].co[0]
-#                 tris[fi][0][1] = vv[0].co[1]
-#                 tris[fi][0][2] = vv[0].co[2]
-#                 tris[fi][1][0] = vv[1].co[0]
-#                 tris[fi][1][1] = vv[1].co[1]
-#                 tris[fi][1][2] = vv[1].co[2]
-#                 tris[fi][2][0] = vv[2].co[0]
-#                 tris[fi][2][1] = vv[2].co[1]
-#                 tris[fi][2][2] = vv[2].co[2]
-#                 # v1v0 = vv[1].co - vv[0].co
-#                 # v2v0 = vv[2].co - vv[0].co
-#                 # assert v1v0.length > 0.0
-#                 # assert v2v0.length > 0.0
-
-#             bm.faces.ensure_lookup_table()
-
-#             # sun_direction = np.array(mu.Vector([0.5, -0.5, 0.5]).normalized(), dtype=datatype)
-#             # normals = np.array(
-#             #     [np.array(i.normal, dtype=datatype) for i in bm.faces], dtype=datatype
-#             # )
-
-#             print(image.shape, rays.shape, tris.shape, rays.dtype)
-#             # result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
-
-#             def rt_nb(do_a_jit=True):
-#                 import numba
-
-#                 def intersect_ray(ro, rda, vrt):
-#                     def cross(a, b):
-#                         return np.array(
-#                             [
-#                                 a[1] * b[2] - a[2] * b[1],
-#                                 a[2] * b[0] - a[0] * b[2],
-#                                 a[0] * b[1] - a[1] * b[0],
-#                             ]
-#                         )
-
-#                     def dot(a, b):
-#                         return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-#                     def tri_intersect(ro, rd, v0, v1, v2):
-#                         v1v0 = v1 - v0
-#                         v2v0 = v2 - v0
-#                         rov0 = ro - v0
-#                         n = cross(v1v0, v2v0)
-#                         q = cross(rov0, rd)
-#                         rdn = dot(rd, n)
-#                         if rdn == 0.0:
-#                             return -1.0
-#                             # return (-1.0, 0.0, 0.0)
-#                         d = 1.0 / rdn
-#                         u = d * (dot(-q, v2v0))
-#                         v = d * (dot(q, v1v0))
-#                         t = d * (dot(-n, rov0))
-#                         if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
-#                             t = -1.0
-#                         # return (t, u, v)
-#                         return t
-
-#                     c = 1.0e10
-#                     n = -1
-#                     for i in range(len(vrt) // 3):
-#                         iv = i * 3
-#                         rcast = tri_intersect(ro, rda, vrt[iv], vrt[iv + 1], vrt[iv + 2])
-#                         if rcast < c and rcast > 0.0:
-#                             c = rcast
-#                             n = i
-
-#                     return n
-
-#                 if do_a_jit:
-#                     intersect_ray = numba.njit(parallel=False)(intersect_ray)
-
-#                 result = np.empty((image.shape[0], image.shape[1]), dtype=np.float32)
-
-#                 def rnd_res(ro, rd, verts, normals, sun_direction, res):
-#                     for x in range(res.shape[0]):
-#                         print(x)
-#                         for y in numba.prange(res.shape[1]):
-#                             r = intersect_ray(ro[x, y], rd, verts)
-#                             res[x, y] = np.dot(normals[r], sun_direction) if r >= 0 else 0.0
-
-#                 rnd_res(ro, rd, verts, normals, sun_direction, result)
-
-#                 return result
-
-#             # numba is aboug 20x speedup with single core CPU
-#             # result = rt_nb(do_a_jit=True)
-
-#             def rt_glcompute():
-#                 # in: rays, tris
-#                 # out: distance, u, v, face index
-
-#                 from .bpy_amb import raycast
-#                 import importlib
-
-#                 importlib.reload(raycast)
-
-#                 rc = raycast.Raycaster(tris)
-#                 rw = rays.shape[0]
-#                 res = rc.cast(rays.reshape((rw * rw, 2, 3)))
-
-#                 return res.reshape((rw, rw, 4))
-
-#             result = rt_glcompute()
-#             dist = result[:, :, 0]
-#             dist = np.where(dist < 50.0, (dist - 4.0) / 2.0, 1.0)
-
-#             image[:, :, 0] = dist
-#             image[:, :, 1] = result[:, :, 1]
-#             image[:, :, 2] = result[:, :, 2]
-
-#             bm.free()
 #             return image
 
 #         self.payload = _pl
