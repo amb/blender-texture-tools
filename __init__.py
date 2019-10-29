@@ -23,9 +23,8 @@ bl_info = {
     "description": "Various image processing filters and operations",
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
-    "documentation": "http://blenderartists.org/forum/"
-    "showthread.php?364409-WIP-Seamless-texture-patching-addon",
-    "version": (0, 1, 18),
+    "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
+    "version": (0, 1, 19),
     "blender": (2, 81, 0),
 }
 
@@ -283,6 +282,42 @@ class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Histogram equalization"
         self.category = "Filter"
         self.payload = lambda self, image, context: hgram_equalize(image, self.intensity, 0.5)
+
+
+class Swizzle_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
+        self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGA")
+        self.props["direction"] = bpy.props.EnumProperty(
+            name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
+        )
+        self.prefix = "swizzle"
+        self.info = "Channel swizzle"
+        self.category = "Filter"
+
+        def _pl(self, image, context):
+            if len(self.order_a) != 4 or len(self.order_b) != 4:
+                self.report({"INFO"}, "Swizzle channel count must be 4")
+                return image
+
+            if set(self.order_a) != set(self.order_b):
+                self.report({"INFO"}, "Swizzle channels must have same names")
+                return image
+
+            first = self.order_a
+            second = self.order_b
+
+            if self.direction == "BTOA":
+                first, second = second, first
+
+            channels = {i: second.index(v) for i, v in enumerate(first)}
+            temp = image.copy()
+            for f, t in channels.items():
+                temp[..., t] = image[..., f]
+
+            return temp
+
+        self.payload = _pl
 
 
 class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
