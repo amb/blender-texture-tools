@@ -287,7 +287,7 @@ class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
 class Swizzle_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
-        self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGA")
+        self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
         self.props["direction"] = bpy.props.EnumProperty(
             name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
         )
@@ -296,11 +296,14 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
         self.category = "Filter"
 
         def _pl(self, image, context):
-            if len(self.order_a) != 4 or len(self.order_b) != 4:
+            test_a = self.order_a.upper()
+            test_b = self.order_b.upper()
+
+            if len(test_a) != 4 or len(test_b) != 4:
                 self.report({"INFO"}, "Swizzle channel count must be 4")
                 return image
 
-            if set(self.order_a) != set(self.order_b):
+            if set(test_a) != set(test_b):
                 self.report({"INFO"}, "Swizzle channels must have same names")
                 return image
 
@@ -310,10 +313,15 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
             if self.direction == "BTOA":
                 first, second = second, first
 
-            channels = {i: second.index(v) for i, v in enumerate(first)}
             temp = image.copy()
-            for f, t in channels.items():
-                temp[..., t] = image[..., f]
+
+            for i in range(4):
+                fl = first[i].upper()
+                t = second.upper().index(fl)
+                if second[t] != first[i]:
+                    temp[..., t] = 1.0 - image[..., i]
+                else:
+                    temp[..., t] = image[..., i]
 
             return temp
 
