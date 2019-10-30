@@ -118,18 +118,81 @@ def hi_pass(pix, s, intensity):
     return pix
 
 
+def gaussian_repeat(pix, s):
+    res = np.zeros_like(pix)
+    for i in range(-s, s + 1):
+        res += np.roll(pix, i, axis=0)
+    pix = res / (1 + s * 2)
+    res *= 0.0
+    for i in range(-s, s + 1):
+        res += np.roll(pix, i, axis=1)
+    return res / (1 + s * 2)
+
+
+def gaussian_repeat_fit(pix, s):
+    rf = s
+
+    pix[0, :] = (pix[0, :] + pix[-1, :]) * 0.5
+    pix[-1, :] = pix[0, :]
+    for i in range(1, rf):
+        factor = ((rf - i)) / rf
+        pix[i, :] = pix[0, :] * factor + pix[i, :] * (1 - factor)
+        pix[-i, :] = pix[0, :] * factor + pix[-i, :] * (1 - factor)
+
+    pix[:, 0] = (pix[:, 0] + pix[:, -1]) * 0.5
+    pix[:, -1] = pix[:, 0]
+    for i in range(1, rf):
+        factor = ((rf - i)) / rf
+        pix[:, i] = pix[:, 0] * factor + pix[:, i] * (1 - factor)
+        pix[:, -i] = pix[:, 0] * factor + pix[:, -i] * (1 - factor)
+
+    return gaussian_repeat(pix, s)
+
+
+def hi_pass_balance(pix, s):
+    # pix = normalize(grayscale(pix))
+    bg = pix.copy()
+
+    # aw = np.argwhere(pix[..., 3] > 0.5)
+    # aws = (aw[:, 0], aw[:, 1])
+    # r = bg[..., 0][aws]
+    # r -= np.min(r)
+    # r /= np.max(r)
+    # hg_av, hg_a = np.unique(np.uint8(r * 255), return_index=True)
+
+    pixmin = np.min(pix)
+    pixmax = np.max(pix)
+    med = (pixmin + pixmax) / 2
+    gas = gaussian_repeat(pix - med, s) + med
+    pix = (pix - gas) * 0.5 + 0.5
+
+    # gas = gaussian(pix, s, 1.0)
+    # pix = (pix - gas) * 0.5 + 0.5
+
+    # pix = gaussian_repeat_fit(pix, s)
+
+    # linear fit into old
+    pix -= np.min(pix)
+    pix /= np.max(pix)
+
+    pix *= pixmax - pixmin
+    pix += pixmin
+
+    pix[..., 3] = bg[..., 3]
+    return pix
+
+
 def hgram_equalize(pix, intensity, atest):
     old = pix.copy()
     aw = np.argwhere(pix[..., 3] > atest)
-    r = pix[..., 0][aw[:, 0], aw[:, 1]]
-    g = pix[..., 1][aw[:, 0], aw[:, 1]]
-    b = pix[..., 2][aw[:, 0], aw[:, 1]]
-    pix[..., 0][aw[:, 0], aw[:, 1]] = np.sort(r).searchsorted(r)
-    pix[..., 1][aw[:, 0], aw[:, 1]] = np.sort(g).searchsorted(g)
-    pix[..., 2][aw[:, 0], aw[:, 1]] = np.sort(b).searchsorted(b)
-    npm = np.max(pix[..., :3])
-    print(npm)
-    pix[..., :3] /= npm
+    aws = (aw[:, 0], aw[:, 1])
+    r = pix[..., 0][aws]
+    g = pix[..., 1][aws]
+    b = pix[..., 2][aws]
+    pix[..., 0][aws] = np.sort(r).searchsorted(r)
+    pix[..., 1][aws] = np.sort(g).searchsorted(g)
+    pix[..., 2][aws] = np.sort(b).searchsorted(b)
+    pix[..., :3] /= np.max(pix[..., :3])
     return old * (1.0 - intensity) + pix * intensity
 
 
@@ -284,50 +347,6 @@ class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: hgram_equalize(image, self.intensity, 0.5)
 
 
-class Swizzle_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
-        self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
-        self.props["direction"] = bpy.props.EnumProperty(
-            name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
-        )
-        self.prefix = "swizzle"
-        self.info = "Channel swizzle"
-        self.category = "Filter"
-
-        def _pl(self, image, context):
-            test_a = self.order_a.upper()
-            test_b = self.order_b.upper()
-
-            if len(test_a) != 4 or len(test_b) != 4:
-                self.report({"INFO"}, "Swizzle channel count must be 4")
-                return image
-
-            if set(test_a) != set(test_b):
-                self.report({"INFO"}, "Swizzle channels must have same names")
-                return image
-
-            first = self.order_a
-            second = self.order_b
-
-            if self.direction == "BTOA":
-                first, second = second, first
-
-            temp = image.copy()
-
-            for i in range(4):
-                fl = first[i].upper()
-                t = second.upper().index(fl)
-                if second[t] != first[i]:
-                    temp[..., t] = 1.0 - image[..., i]
-                else:
-                    temp[..., t] = image[..., i]
-
-            return temp
-
-        self.payload = _pl
-
-
 class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
     """Image seamless generator operator"""
 
@@ -374,6 +393,60 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
             return amask * image + (numpy.ones(amask.shape) - amask) * pixels
 
         self.payload = gimpify
+
+
+class Swizzle_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
+        self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
+        self.props["direction"] = bpy.props.EnumProperty(
+            name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
+        )
+        self.prefix = "swizzle"
+        self.info = "Channel swizzle"
+        self.category = "Filter"
+
+        def _pl(self, image, context):
+            test_a = self.order_a.upper()
+            test_b = self.order_b.upper()
+
+            if len(test_a) != 4 or len(test_b) != 4:
+                self.report({"INFO"}, "Swizzle channel count must be 4")
+                return image
+
+            if set(test_a) != set(test_b):
+                self.report({"INFO"}, "Swizzle channels must have same names")
+                return image
+
+            first = self.order_a
+            second = self.order_b
+
+            if self.direction == "BTOA":
+                first, second = second, first
+
+            temp = image.copy()
+
+            for i in range(4):
+                fl = first[i].upper()
+                t = second.upper().index(fl)
+                if second[t] != first[i]:
+                    temp[..., t] = 1.0 - image[..., i]
+                else:
+                    temp[..., t] = image[..., i]
+
+            return temp
+
+        self.payload = _pl
+
+
+class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
+        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "hipass_balance"
+        self.info = "High-pass balance"
+        self.category = "Filter"
+        self.payload = lambda self, image, context: hi_pass_balance(image, self.width)
 
 
 # class LaplacianBlend_IOP(image_ops.ImageOperatorGenerator):
