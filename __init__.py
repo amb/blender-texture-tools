@@ -130,13 +130,14 @@ def hi_pass(pix, s, intensity):
 
 def gaussian_repeat(pix, s):
     res = np.zeros_like(pix)
+    gcr = gauss_curve(s)
     for i in range(-s, s + 1):
-        res += np.roll(pix, i, axis=0)
-    pix = res / (1 + s * 2)
+        res += np.roll(pix, i, axis=0) * gcr[i + s]
+    pix = res.copy()
     res *= 0.0
     for i in range(-s, s + 1):
-        res += np.roll(pix, i, axis=1)
-    return res / (1 + s * 2)
+        res += np.roll(pix, i, axis=1) * gcr[i + s]
+    return res
 
 
 def gaussian_repeat_fit(pix, s):
@@ -228,6 +229,7 @@ def hi_pass_balance(pix, s):
     pixmax = np.max(pix)
     med = (pixmin + pixmax) / 2
     gas = gaussian_repeat(pix - med, s) + med
+    # pix = gas
     pix = (pix - gas) * 0.5 + 0.5
 
     pix[..., 0] = hist_match(pix[..., 0], bg[..., 0])
@@ -298,7 +300,10 @@ def bilateral_filter(pix, s, intensity):
 
 
 def normals_simple(pix, s, intensity):
-    pix = normalize(gaussian(grayscale(pix), s, 1.0))
+    pix = grayscale(pix)
+    if s > 0:
+        pix = gaussian(pix, s, 1.0)
+    pix = normalize(pix)
     sshape = pix.shape
 
     # extract x and y deltas
