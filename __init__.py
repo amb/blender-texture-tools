@@ -24,7 +24,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 19),
+    "version": (0, 1, 20),
     "blender": (2, 81, 0),
 }
 
@@ -94,7 +94,7 @@ def sobel_y(pix, intensity):
     return convolution(pix, intensity, gy)
 
 
-def sobel(pix, s, intensity):
+def sobel(pix, intensity):
     retarr = numpy.zeros(pix.shape)
     retarr = sobel_x(pix, 1.0)
     retarr += sobel_y(pix, 1.0)
@@ -282,28 +282,38 @@ def bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
     return result / wgt_sum
 
 
-def bilateral_filter(pix, s, intensity):
+def bilateral_filter(pix, s, intensity, source):
     # multiply by alpha
     pix[..., 0] *= pix[..., 3]
     pix[..., 1] *= pix[..., 3]
     pix[..., 2] *= pix[..., 3]
 
+    if source == "SOBEL":
+        sb = sobel(pix, 1.0)
+    else:
+        sb = pix
+
     print("R")
     # image, spatial, range
-    pix[..., 0] = bilateral(pix[..., 0], s, intensity)
+    pix[..., 0] = bilateral(sb[..., 0], s, intensity)
     print("G")
-    pix[..., 1] = bilateral(pix[..., 1], s, intensity)
+    pix[..., 1] = bilateral(sb[..., 1], s, intensity)
     print("B")
-    pix[..., 2] = bilateral(pix[..., 2], s, intensity)
+    pix[..., 2] = bilateral(sb[..., 2], s, intensity)
 
     return pix
 
 
-def normals_simple(pix, s, intensity):
-    pix = grayscale(pix)
+def normals_simple(pix, s, intensity, source):
     if s > 0:
         pix = gaussian(pix, s, 1.0)
-    pix = normalize(pix)
+
+    if source == "SOBEL":
+        pix = sobel(pix, 1.0)
+    else:
+        pix = grayscale(pix)
+
+    # pix = normalize(pix)
     sshape = pix.shape
 
     # extract x and y deltas
@@ -345,13 +355,16 @@ def dog(pix, a, b, mp):
 
 class Normals_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
+        self.props["source"] = bpy.props.EnumProperty(
+            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
+        )
         self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "normals"
         self.info = "(Very rough estimate) normal map from RGB"
         self.category = "Filter"
         self.payload = lambda self, image, context: normals_simple(
-            image, self.width, self.intensity
+            image, self.width, self.intensity, self.source
         )
 
 
@@ -404,13 +417,16 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
 
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
+        self.props["source"] = bpy.props.EnumProperty(
+            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
+        )
         self.props["sigma_a"] = bpy.props.FloatProperty(name="Sigma A", min=0.01, default=3.0)
         self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.1)
         self.prefix = "bilateral_filter"
         self.info = "Bilateral"
         self.category = "Filter"
         self.payload = lambda self, image, context: bilateral_filter(
-            image, self.sigma_a, self.sigma_b
+            image, self.sigma_a, self.sigma_b, self.source
         )
 
 
