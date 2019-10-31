@@ -38,6 +38,13 @@ import importlib
 importlib.reload(image_ops)
 
 
+def gauss_curve(x):
+    # gaussian with 0.01831 at last
+    res = np.array([np.exp(-((i * (2 / x)) ** 2)) for i in range(-x, x + 1)])
+    res /= np.sum(res)
+    return res
+
+
 def convolution(ssp, intens, sfil):
     # source, intensity, convolution matrix
     tpx = numpy.zeros(ssp.shape, dtype=float)
@@ -102,12 +109,15 @@ def edgedetect(pix, s, intensity):
 
 
 def gaussian(pix, s, intensity):
-    sval = 1 + s * 2
-    # TODO: actual gaussian, not just box
-    krn = np.ones(sval) / sval
+    s = int(s)
+    sa = pix[..., 3]
+    # sval = 1 + s * 2
+    # krn = np.ones(sval) / sval
+    krn = gauss_curve(s)
     f_krn = lambda m: np.convolve(m, krn, mode="same")
     pix = np.apply_along_axis(f_krn, axis=1, arr=pix)
     pix = np.apply_along_axis(f_krn, axis=0, arr=pix)
+    pix[..., 3] = sa
     return pix
 
 
@@ -149,16 +159,70 @@ def gaussian_repeat_fit(pix, s):
     return gaussian_repeat(pix, s)
 
 
-def hi_pass_balance(pix, s):
-    # pix = normalize(grayscale(pix))
-    bg = pix.copy()
+# https://stackoverflow.com/questions/32655686/histogram-matching-of-two-images-in-python-2-x
+def hist_match(source, template):
+    """
+    Adjust the pixel values of a grayscale image such that its histogram
+    matches that of a target image
 
-    # aw = np.argwhere(pix[..., 3] > 0.5)
-    # aws = (aw[:, 0], aw[:, 1])
-    # r = bg[..., 0][aws]
-    # r -= np.min(r)
-    # r /= np.max(r)
-    # hg_av, hg_a = np.unique(np.uint8(r * 255), return_index=True)
+    Arguments:
+    -----------
+        source: np.ndarray
+            Image to transform; the histogram is computed over the flattened
+            array
+        template: np.ndarray
+            Template image; can have different dimensions to source
+    Returns:
+    -----------
+        matched: np.ndarray
+            The transformed output image
+    """
+
+    oldshape = source.shape
+    source = source.ravel()
+    template = template.ravel()
+
+    # get the set of unique pixel values and their corresponding indices and
+    # counts
+    s_values, bin_idx, s_counts = np.unique(source, return_inverse=True, return_counts=True)
+    t_values, t_counts = np.unique(template, return_counts=True)
+
+    # take the cumsum of the counts and normalize by the number of pixels to
+    # get the empirical cumulative distribution functions for the source and
+    # template images (maps pixel value --> quantile)
+    s_quantiles = np.cumsum(s_counts).astype(np.float64)
+    s_quantiles /= s_quantiles[-1]
+    t_quantiles = np.cumsum(t_counts).astype(np.float64)
+    t_quantiles /= t_quantiles[-1]
+
+    # interpolate linearly to find the pixel values in the template image
+    # that correspond most closely to the quantiles in the source image
+    interp_t_values = np.interp(s_quantiles, t_quantiles, t_values)
+
+    return interp_t_values[bin_idx].reshape(oldshape)
+
+
+def cumulative_distribution(data, bins):
+    assert np.min(data) >= 0.0 and np.max(data) <= 1.0
+    hg_av, hg_a = np.unique(np.floor(data * (bins - 1)), return_index=True)
+    hg_a = np.float32(hg_a)
+    hgs = np.sum(hg_a)
+    hg_a /= hgs
+    res = np.zeros((bins,))
+    res[np.int64(hg_av)] = hg_a
+    return np.cumsum(res)
+
+
+def ecdf(x):
+    """ empirical CDF """
+    vals, counts = np.unique(x, return_counts=True)
+    ecdf = np.cumsum(counts).astype(np.float64)
+    ecdf /= ecdf[-1]
+    return vals, ecdf
+
+
+def hi_pass_balance(pix, s):
+    bg = pix.copy()
 
     pixmin = np.min(pix)
     pixmax = np.max(pix)
@@ -166,17 +230,9 @@ def hi_pass_balance(pix, s):
     gas = gaussian_repeat(pix - med, s) + med
     pix = (pix - gas) * 0.5 + 0.5
 
-    # gas = gaussian(pix, s, 1.0)
-    # pix = (pix - gas) * 0.5 + 0.5
-
-    # pix = gaussian_repeat_fit(pix, s)
-
-    # linear fit into old
-    pix -= np.min(pix)
-    pix /= np.max(pix)
-
-    pix *= pixmax - pixmin
-    pix += pixmin
+    pix[..., 0] = hist_match(pix[..., 0], bg[..., 0])
+    pix[..., 1] = hist_match(pix[..., 1], bg[..., 1])
+    pix[..., 2] = hist_match(pix[..., 2], bg[..., 2])
 
     pix[..., 3] = bg[..., 3]
     return pix
@@ -275,6 +331,13 @@ def normals_simple(pix, s, intensity):
     return retarr
 
 
+def dog(pix, a, b, mp):
+    pixb = pix.copy()
+    pix[..., :3] = np.abs(gaussian_repeat(pix, a) - gaussian_repeat(pixb, b))[..., :3]
+    pix[pix < mp][..., :3] = 0.0
+    return pix
+
+
 class Normals_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
@@ -324,6 +387,16 @@ class HiPass_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: hi_pass(image, self.width, self.intensity)
 
 
+class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
+        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "hipass_balance"
+        self.info = "High-pass balance"
+        self.category = "Filter"
+        self.payload = lambda self, image, context: hi_pass_balance(image, self.width)
+
+
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["sigma_a"] = bpy.props.FloatProperty(name="Sigma A", min=0.01, default=3.0)
@@ -345,6 +418,17 @@ class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Histogram equalization"
         self.category = "Filter"
         self.payload = lambda self, image, context: hgram_equalize(image, self.intensity, 0.5)
+
+
+# class DoG_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         self.props["a"] = bpy.props.IntProperty(name="Width A", min=1, default=20)
+#         self.props["b"] = bpy.props.IntProperty(name="Width B", min=1, default=100)
+#         self.props["mp"] = bpy.props.FloatProperty(name="Treshold", min=0.0, default=1.0)
+#         self.prefix = "dog"
+#         self.info = "Difference of gaussians"
+#         self.category = "Filter"
+#         self.payload = lambda self, image, context: dog(image, self.a, self.b, self.mp)
 
 
 class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
@@ -437,16 +521,6 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
             return temp
 
         self.payload = _pl
-
-
-class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
-        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-        self.prefix = "hipass_balance"
-        self.info = "High-pass balance"
-        self.category = "Filter"
-        self.payload = lambda self, image, context: hi_pass_balance(image, self.width)
 
 
 # class LaplacianBlend_IOP(image_ops.ImageOperatorGenerator):
