@@ -306,14 +306,14 @@ def bilateral_filter(pix, s, intensity, source):
 
 def normals_simple(pix, s, intensity, source):
     if s > 0:
-        pix = gaussian(pix, s, 1.0)
+        pix = gaussian_repeat(pix, s)
 
     if source == "SOBEL":
         pix = sobel(pix, 1.0)
     else:
         pix = grayscale(pix)
 
-    # pix = normalize(pix)
+    pix = normalize(pix)
     sshape = pix.shape
 
     # extract x and y deltas
@@ -483,9 +483,9 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
             imask[imask < 0] = 0
 
             # copy the data into the three remaining corners
-            imask[0 : sys + 1, sxs : xs - 1] = numpy.fliplr(imask[0 : sys + 1, 0 : sxs - 1])
+            imask[0 : sys + 1, sxs : xs] = numpy.fliplr(imask[0 : sys + 1, 0 : sxs])
             imask[-sys:ys, 0:sxs] = numpy.flipud(imask[0:sys, 0:sxs])
-            imask[-sys:ys, sxs : xs - 1] = numpy.flipud(imask[0:sys, sxs : xs - 1])
+            imask[-sys:ys, sxs : xs] = numpy.flipud(imask[0:sys, sxs : xs])
             imask[sys, :] = imask[sys - 1, :]  # center line
 
             # apply mask
