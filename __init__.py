@@ -353,6 +353,14 @@ def dog(pix, a, b, mp):
     return pix
 
 
+class Grayscale_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "grayscale"
+        self.info = "Grayscale from RGB"
+        self.category = "Basic"
+        self.payload = lambda self, image, context: grayscale(image)
+
+
 class Normals_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["source"] = bpy.props.EnumProperty(
@@ -362,18 +370,10 @@ class Normals_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "normals"
         self.info = "(Very rough estimate) normal map from RGB"
-        self.category = "Filter"
+        self.category = "Advanced"
         self.payload = lambda self, image, context: normals_simple(
             image, self.width, self.intensity, self.source
         )
-
-
-class Grayscale_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.prefix = "grayscale"
-        self.info = "Grayscale from RGB"
-        self.category = "Filter"
-        self.payload = lambda self, image, context: grayscale(image)
 
 
 class Sharpen_IOP(image_ops.ImageOperatorGenerator):
@@ -381,7 +381,7 @@ class Sharpen_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "sharpen"
         self.info = "Simple sharpen"
-        self.category = "Filter"
+        self.category = "Basic"
         self.payload = lambda self, image, context: sharpen(image, self.intensity)
 
 
@@ -391,7 +391,7 @@ class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "gaussian_blur"
         self.info = "Does a Gaussian blur"
-        self.category = "Filter"
+        self.category = "Basic"
         self.payload = lambda self, image, context: gaussian(image, self.width, self.intensity)
 
 
@@ -401,7 +401,7 @@ class HiPass_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "high_pass"
         self.info = "High pass"
-        self.category = "Filter"
+        self.category = "Basic"
         self.payload = lambda self, image, context: hi_pass(image, self.width, self.intensity)
 
 
@@ -411,7 +411,7 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
         # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "hipass_balance"
         self.info = "High-pass balance"
-        self.category = "Filter"
+        self.category = "Advanced"
         self.payload = lambda self, image, context: hi_pass_balance(image, self.width)
 
 
@@ -424,7 +424,7 @@ class Bilateral_IOP(image_ops.ImageOperatorGenerator):
         self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.1)
         self.prefix = "bilateral_filter"
         self.info = "Bilateral"
-        self.category = "Filter"
+        self.category = "Advanced"
         self.payload = lambda self, image, context: bilateral_filter(
             image, self.sigma_a, self.sigma_b, self.source
         )
@@ -437,7 +437,7 @@ class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
         )
         self.prefix = "histogram_eq"
         self.info = "Histogram equalization"
-        self.category = "Filter"
+        self.category = "Advanced"
         self.payload = lambda self, image, context: hgram_equalize(image, self.intensity, 0.5)
 
 
@@ -459,7 +459,7 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "gimp_seamless"
         self.info = "Gimp style seamless image operation"
-        self.category = "Filter"
+        self.category = "Advanced"
 
         def gimpify(self, image, context):
             pixels = numpy.copy(image)
@@ -483,19 +483,19 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
             imask[imask < 0] = 0
 
             # copy the data into the three remaining corners
-            imask[0 : sys + 1, sxs : xs] = numpy.fliplr(imask[0 : sys + 1, 0 : sxs])
+            imask[0 : sys + 1, sxs:xs] = numpy.fliplr(imask[0 : sys + 1, 0:sxs])
             imask[-sys:ys, 0:sxs] = numpy.flipud(imask[0:sys, 0:sxs])
-            imask[-sys:ys, sxs : xs] = numpy.flipud(imask[0:sys, sxs : xs])
+            imask[-sys:ys, sxs:xs] = numpy.flipud(imask[0:sys, sxs:xs])
             imask[sys, :] = imask[sys - 1, :]  # center line
 
             # apply mask
-            amask = numpy.zeros(pixels.shape, dtype=float)
+            amask = numpy.empty(pixels.shape, dtype=float)
             amask[:, :, 0] = imask
             amask[:, :, 1] = imask
             amask[:, :, 2] = imask
             amask[:, :, 3] = imask
 
-            return amask * image + (numpy.ones(amask.shape) - amask) * pixels
+            return amask * image + (1.0 - amask) * pixels
 
         self.payload = gimpify
 
@@ -509,7 +509,7 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
         )
         self.prefix = "swizzle"
         self.info = "Channel swizzle"
-        self.category = "Filter"
+        self.category = "Basic"
 
         def _pl(self, image, context):
             test_a = self.order_a.upper()
