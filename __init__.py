@@ -132,11 +132,19 @@ def gaussian_repeat(pix, s):
     res = np.zeros_like(pix)
     gcr = gauss_curve(s)
     for i in range(-s, s + 1):
-        res += np.roll(pix, i, axis=0) * gcr[i + s]
+        if i != 0:
+            res[:-i, ...] += pix[i:, ...] * gcr[i + s]
+            res[-i:, ...] += pix[:i, ...] * gcr[i + s]
+        else:
+            res += pix * gcr[s]
     pix = res.copy()
     res *= 0.0
     for i in range(-s, s + 1):
-        res += np.roll(pix, i, axis=1) * gcr[i + s]
+        if i != 0:
+            res[:, :-i, :] += pix[:, i:, :] * gcr[i + s]
+            res[:, -i:, :] += pix[:, :i, :] * gcr[i + s]
+        else:
+            res += pix * gcr[s]
     return res
 
 
@@ -410,7 +418,7 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
         # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "hipass_balance"
-        self.info = "High-pass balance"
+        self.info = "Remove low frequencies from the image"
         self.category = "Advanced"
         self.payload = lambda self, image, context: hi_pass_balance(image, self.width)
 
