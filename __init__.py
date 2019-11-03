@@ -354,6 +354,29 @@ def normals_simple(pix, s, intensity, source):
     return retarr
 
 
+def normals_to_curvature(pix, s, intensity):
+    curve = np.zeros((pix.shape[0], pix.shape[1]), dtype=np.float32)
+    vectors = np.zeros((pix.shape[0], pix.shape[1], 3), dtype=np.float32)
+
+    vectors[..., 0] = 0.5 - pix[..., 0]
+    vectors[..., 1] = pix[..., 1] - 0.5
+    vectors[..., 2] = pix[..., 2]
+
+    y_vec = np.array([1, 0, 0], dtype=np.float32)
+    x_vec = np.array([0, 1, 0], dtype=np.float32)
+
+    for x in range(1, pix.shape[1] - 1):
+        for y in range(1, pix.shape[0] - 1):
+            yd = np.dot(-x_vec, vectors[y - 1, x]) + np.dot(x_vec, vectors[y + 1, x])
+            xd = np.dot(y_vec, vectors[y, x - 1]) + np.dot(-y_vec, vectors[y, x + 1])
+            curve[y, x] = (xd + yd) * intensity + 0.5
+
+    pix[..., 0] = curve
+    pix[..., 1] = curve
+    pix[..., 2] = curve
+    return pix
+
+
 def dog(pix, a, b, mp):
     pixb = pix.copy()
     pix[..., :3] = np.abs(gaussian_repeat(pix, a) - gaussian_repeat(pixb, b))[..., :3]
@@ -381,6 +404,18 @@ class Normals_IOP(image_ops.ImageOperatorGenerator):
         self.category = "Advanced"
         self.payload = lambda self, image, context: normals_simple(
             image, self.width, self.intensity, self.source
+        )
+
+
+class NormalsToCurvature_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "normals_to_curvature"
+        self.info = "Curvature map from tangent normal map"
+        self.category = "Advanced"
+        self.payload = lambda self, image, context: normals_to_curvature(
+            image, self.width, self.intensity
         )
 
 
