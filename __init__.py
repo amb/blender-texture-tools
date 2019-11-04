@@ -131,14 +131,14 @@ def gaussian_repeat(pix, s):
             res[-i:, ...] += pix[:i, ...] * gcr[i + s]
         else:
             res += pix * gcr[s]
-    pix = res.copy()
+    pix2 = res.copy()
     res *= 0.0
     for i in range(-s, s + 1):
         if i != 0:
-            res[:, :-i, :] += pix[:, i:, :] * gcr[i + s]
-            res[:, -i:, :] += pix[:, :i, :] * gcr[i + s]
+            res[:, :-i, :] += pix2[:, i:, :] * gcr[i + s]
+            res[:, -i:, :] += pix2[:, :i, :] * gcr[i + s]
         else:
-            res += pix * gcr[s]
+            res += pix2 * gcr[s]
     return res
 
 
@@ -205,27 +205,30 @@ def hist_match(source, template):
     return interp_t_values[bin_idx].reshape(oldshape)
 
 
-def gaussianize(source):
+def gaussianize(source, NG=1000):
     oldshape = source.shape
     output = source.copy()
-    NG = 1000
     transforms = []
 
+    t_values = np.arange(NG * 8 + 1) / (NG * 8)
+    t_counts = gauss_curve(NG * 4)
+    t_quantiles = np.cumsum(t_counts).astype(np.float64)
+
+    t_max = 0.0
     for i in range(3):
         s_values, bin_idx, s_counts = np.lib.arraysetops.unique(
             source[..., i].ravel(), return_inverse=True, return_counts=True
         )
-        t_values = np.arange(NG * 8 + 1) / (NG * 8)
-        t_counts = gauss_curve(NG * 4)
 
         s_quantiles = np.cumsum(s_counts).astype(np.float64)
         s_quantiles /= s_quantiles[-1]
-        t_quantiles = np.cumsum(t_counts).astype(np.float64)
+        s_max = s_quantiles[-1]
+        if s_max > t_max:
+            t_max = s_max
+        transforms.append([s_values, s_quantiles, s_max])
 
         tv = np.interp(s_quantiles, t_quantiles, t_values)[bin_idx]
         output[..., i] = tv.reshape(oldshape[:2])
-
-        transforms.append([s_values, s_counts])
 
     return output, transforms
 
@@ -238,12 +241,12 @@ def degaussianize(source, transforms):
         s_values, bin_idx, s_counts = np.lib.arraysetops.unique(
             output[..., i].ravel(), return_inverse=True, return_counts=True
         )
-        t_values, t_counts = transforms[i]
+        t_values, t_quantiles, _ = transforms[i]
 
         s_quantiles = np.cumsum(s_counts).astype(np.float64)
         s_quantiles /= s_quantiles[-1]
-        t_quantiles = np.cumsum(t_counts).astype(np.float64)
-        t_quantiles /= t_quantiles[-1]
+        # t_quantiles = np.cumsum(t_counts).astype(np.float64)
+        # t_quantiles /= t_quantiles[-1]
 
         tv = np.interp(s_quantiles, t_quantiles, t_values)[bin_idx]
         output[..., i] = tv.reshape(oldshape[:2])
@@ -270,15 +273,24 @@ def ecdf(x):
     return vals, ecdf
 
 
-def hi_pass_balance(pix, s):
+def hi_pass_balance(pix, s, zoom):
     bg = pix.copy()
+
+    yzm = pix.shape[0] // 2
+    xzm = pix.shape[1] // 2
+
+    yzoom = zoom if zoom < yzm else yzm
+    xzoom = zoom if zoom < xzm else xzm
+
     pixmin = np.min(pix)
     pixmax = np.max(pix)
     med = (pixmin + pixmax) / 2
     gas = gaussian_repeat(pix - med, s) + med
     pix = (pix - gas) * 0.5 + 0.5
     for c in range(3):
-        pix[..., c] = hist_match(pix[..., c], bg[..., c])
+        pix[..., c] = hist_match(
+            pix[..., c], bg[yzm - yzoom : yzm + yzoom, xzm - xzoom : xzm + xzoom, c]
+        )
     pix[..., 3] = bg[..., 3]
     return pix
 
@@ -537,11 +549,12 @@ class HiPass_IOP(image_ops.ImageOperatorGenerator):
 class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
+        self.props["zoom"] = bpy.props.IntProperty(name="Center slice", min=5, default=1000)
         # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "hipass_balance"
         self.info = "Remove low frequencies from the image"
         self.category = "Advanced"
-        self.payload = lambda self, image, context: hi_pass_balance(image, self.width)
+        self.payload = lambda self, image, context: hi_pass_balance(image, self.width, self.zoom)
 
 
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
@@ -599,13 +612,11 @@ class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
 
 class Gaussianize_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        # self.props["intensity"] = bpy.props.FloatProperty(
-        #     name="Intensity", min=0.0, max=1.0, default=1.0
-        # )
+        self.props["count"] = bpy.props.IntProperty(name="Count", min=10, max=100000, default=1000)
         self.prefix = "gaussianize"
         self.info = "Gaussianize histogram"
         self.category = "Advanced"
-        self.payload = lambda self, image, context: gaussianize(image)[0]
+        self.payload = lambda self, image, context: gaussianize(image, NG=self.count)[0]
 
 
 class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
@@ -629,6 +640,49 @@ class HistogramSeamless_IOP(image_ops.ImageOperatorGenerator):
             gimg, transforms = gaussianize(image)
             blended = gimpify(gimg)
             return degaussianize(blended, transforms)
+
+        self.payload = _pl
+
+
+class ContrastBalance_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "contrast_balance"
+        self.info = "Balance contrast"
+        self.category = "Advanced"
+
+        self.props["gA"] = bpy.props.IntProperty(name="Range", min=1, max=256, default=20)
+        self.props["gB"] = bpy.props.IntProperty(name="Error", min=1, max=256, default=40)
+        self.props["strength"] = bpy.props.FloatProperty(name="Strength", min=0.0, default=1.0)
+
+        def _pl(self, image, context):
+            tmp = image.copy()
+
+            # squared error
+            gcr = gaussian_repeat(tmp, self.gA)
+            error = (tmp - gcr) ** 2
+            mask = -gaussian_repeat(error, self.gB)
+            mask -= np.min(mask)
+            mask /= np.max(mask)
+            mask = (mask - 0.5) * self.strength + 1.0
+            res = gcr + mask * (tmp - gcr)
+
+            res[..., 3] = tmp[..., 3]
+            return res
+
+        self.payload = _pl
+
+
+class Normalize_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "normalize"
+        self.info = "Normalize"
+        self.category = "Basic"
+
+        def _pl(self, image, context):
+            tmp = image[..., 3]
+            res = normalize(image)
+            res[..., 3] = tmp
+            return res
 
         self.payload = _pl
 
