@@ -24,7 +24,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 20),
+    "version": (0, 1, 21),
     "blender": (2, 81, 0),
 }
 
@@ -62,12 +62,6 @@ def blur(pix, s, intensity):
 
 def sharpen(pix, intensity):
     return convolution(pix, intensity, numpy.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]))
-
-
-def separate_values(pix, s, intensity):
-    retarr = numpy.copy(pix)
-    retarr[..., :3] = pix[..., :3] ** intensity
-    return retarr
 
 
 def grayscale(ssp):
@@ -211,6 +205,52 @@ def hist_match(source, template):
     return interp_t_values[bin_idx].reshape(oldshape)
 
 
+def gaussianize(source):
+    oldshape = source.shape
+    output = source.copy()
+    NG = 1000
+    transforms = []
+
+    for i in range(3):
+        s_values, bin_idx, s_counts = np.lib.arraysetops.unique(
+            source[..., i].ravel(), return_inverse=True, return_counts=True
+        )
+        t_values = np.arange(NG * 8 + 1) / (NG * 8)
+        t_counts = gauss_curve(NG * 4)
+
+        s_quantiles = np.cumsum(s_counts).astype(np.float64)
+        s_quantiles /= s_quantiles[-1]
+        t_quantiles = np.cumsum(t_counts).astype(np.float64)
+
+        tv = np.interp(s_quantiles, t_quantiles, t_values)[bin_idx]
+        output[..., i] = tv.reshape(oldshape[:2])
+
+        transforms.append([s_values, s_counts])
+
+    return output, transforms
+
+
+def degaussianize(source, transforms):
+    oldshape = source.shape
+    output = source.copy()
+
+    for i in range(3):
+        s_values, bin_idx, s_counts = np.lib.arraysetops.unique(
+            output[..., i].ravel(), return_inverse=True, return_counts=True
+        )
+        t_values, t_counts = transforms[i]
+
+        s_quantiles = np.cumsum(s_counts).astype(np.float64)
+        s_quantiles /= s_quantiles[-1]
+        t_quantiles = np.cumsum(t_counts).astype(np.float64)
+        t_quantiles /= t_quantiles[-1]
+
+        tv = np.interp(s_quantiles, t_quantiles, t_values)[bin_idx]
+        output[..., i] = tv.reshape(oldshape[:2])
+
+    return output
+
+
 def cumulative_distribution(data, bins):
     assert np.min(data) >= 0.0 and np.max(data) <= 1.0
     hg_av, hg_a = np.unique(np.floor(data * (bins - 1)), return_index=True)
@@ -232,18 +272,13 @@ def ecdf(x):
 
 def hi_pass_balance(pix, s):
     bg = pix.copy()
-
     pixmin = np.min(pix)
     pixmax = np.max(pix)
     med = (pixmin + pixmax) / 2
     gas = gaussian_repeat(pix - med, s) + med
-    # pix = gas
     pix = (pix - gas) * 0.5 + 0.5
-
-    pix[..., 0] = hist_match(pix[..., 0], bg[..., 0])
-    pix[..., 1] = hist_match(pix[..., 1], bg[..., 1])
-    pix[..., 2] = hist_match(pix[..., 2], bg[..., 2])
-
+    for c in range(3):
+        pix[..., c] = hist_match(pix[..., c], bg[..., c])
     pix[..., 3] = bg[..., 3]
     return pix
 
@@ -252,12 +287,9 @@ def hgram_equalize(pix, intensity, atest):
     old = pix.copy()
     aw = np.argwhere(pix[..., 3] > atest)
     aws = (aw[:, 0], aw[:, 1])
-    r = pix[..., 0][aws]
-    g = pix[..., 1][aws]
-    b = pix[..., 2][aws]
-    pix[..., 0][aws] = np.sort(r).searchsorted(r)
-    pix[..., 1][aws] = np.sort(g).searchsorted(g)
-    pix[..., 2][aws] = np.sort(b).searchsorted(b)
+    for c in range(3):
+        t = pix[..., c][aws]
+        pix[..., c][aws] = np.sort(t).searchsorted(t)
     pix[..., :3] /= np.max(pix[..., :3])
     return old * (1.0 - intensity) + pix * intensity
 
@@ -384,6 +416,43 @@ def dog(pix, a, b, mp):
     return pix
 
 
+def gimpify(image):
+    pixels = numpy.copy(image)
+    xs, ys = image.shape[1], image.shape[0]
+    image = numpy.roll(image, xs * 2 + xs * 4 * (ys // 2))
+
+    sxs = xs // 2
+    sys = ys // 2
+
+    # generate the mask
+    imask = numpy.zeros((pixels.shape[0], pixels.shape[1]), dtype=float)
+    for y in range(0, sys):
+        zy0 = y / sys + 0.001
+        zy1 = 1 - y / sys + 0.001
+        for x in range(0, sxs):
+            zx0 = 1 - x / sxs + 0.001
+            imask[y, x] = 1 - zy0 / zx0
+            zx1 = x / sxs + 0.001
+            imask[y, x] = numpy.maximum((1 - zx1 / zy1), imask[y, x])
+
+    imask[imask < 0] = 0
+
+    # copy the data into the three remaining corners
+    imask[0 : sys + 1, sxs:xs] = numpy.fliplr(imask[0 : sys + 1, 0:sxs])
+    imask[-sys:ys, 0:sxs] = numpy.flipud(imask[0:sys, 0:sxs])
+    imask[-sys:ys, sxs:xs] = numpy.flipud(imask[0:sys, sxs:xs])
+    imask[sys, :] = imask[sys - 1, :]  # center line
+
+    # apply mask
+    amask = numpy.empty(pixels.shape, dtype=float)
+    amask[:, :, 0] = imask
+    amask[:, :, 1] = imask
+    amask[:, :, 2] = imask
+    amask[:, :, 3] = imask
+
+    return amask * image + (1.0 - amask) * pixels
+
+
 class Grayscale_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "grayscale"
@@ -392,31 +461,48 @@ class Grayscale_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: grayscale(image)
 
 
-class Normals_IOP(image_ops.ImageOperatorGenerator):
+class Swizzle_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["source"] = bpy.props.EnumProperty(
-            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
+        self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
+        self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
+        self.props["direction"] = bpy.props.EnumProperty(
+            name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
         )
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-        self.prefix = "normals"
-        self.info = "(Very rough estimate) normal map from RGB"
-        self.category = "Advanced"
-        self.payload = lambda self, image, context: normals_simple(
-            image, self.width, self.intensity, self.source
-        )
+        self.prefix = "swizzle"
+        self.info = "Channel swizzle"
+        self.category = "Basic"
 
+        def _pl(self, image, context):
+            test_a = self.order_a.upper()
+            test_b = self.order_b.upper()
 
-class NormalsToCurvature_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-        self.prefix = "normals_to_curvature"
-        self.info = "Curvature map from tangent normal map"
-        self.category = "Advanced"
-        self.payload = lambda self, image, context: normals_to_curvature(
-            image, self.width, self.intensity
-        )
+            if len(test_a) != 4 or len(test_b) != 4:
+                self.report({"INFO"}, "Swizzle channel count must be 4")
+                return image
+
+            if set(test_a) != set(test_b):
+                self.report({"INFO"}, "Swizzle channels must have same names")
+                return image
+
+            first = self.order_a
+            second = self.order_b
+
+            if self.direction == "BTOA":
+                first, second = second, first
+
+            temp = image.copy()
+
+            for i in range(4):
+                fl = first[i].upper()
+                t = second.upper().index(fl)
+                if second[t] != first[i]:
+                    temp[..., t] = 1.0 - image[..., i]
+                else:
+                    temp[..., t] = image[..., i]
+
+            return temp
+
+        self.payload = _pl
 
 
 class Sharpen_IOP(image_ops.ImageOperatorGenerator):
@@ -473,6 +559,33 @@ class Bilateral_IOP(image_ops.ImageOperatorGenerator):
         )
 
 
+class Normals_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["source"] = bpy.props.EnumProperty(
+            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
+        )
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "normals"
+        self.info = "(Very rough estimate) normal map from RGB"
+        self.category = "Advanced"
+        self.payload = lambda self, image, context: normals_simple(
+            image, self.width, self.intensity, self.source
+        )
+
+
+class NormalsToCurvature_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "normals_to_curvature"
+        self.info = "Curvature map from tangent normal map"
+        self.category = "Advanced"
+        self.payload = lambda self, image, context: normals_to_curvature(
+            image, self.width, self.intensity
+        )
+
+
 class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["intensity"] = bpy.props.FloatProperty(
@@ -484,15 +597,15 @@ class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: hgram_equalize(image, self.intensity, 0.5)
 
 
-# class DoG_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.props["a"] = bpy.props.IntProperty(name="Width A", min=1, default=20)
-#         self.props["b"] = bpy.props.IntProperty(name="Width B", min=1, default=100)
-#         self.props["mp"] = bpy.props.FloatProperty(name="Treshold", min=0.0, default=1.0)
-#         self.prefix = "dog"
-#         self.info = "Difference of gaussians"
-#         self.category = "Filter"
-#         self.payload = lambda self, image, context: dog(image, self.a, self.b, self.mp)
+class Gaussianize_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        # self.props["intensity"] = bpy.props.FloatProperty(
+        #     name="Intensity", min=0.0, max=1.0, default=1.0
+        # )
+        self.prefix = "gaussianize"
+        self.info = "Gaussianize histogram"
+        self.category = "Advanced"
+        self.payload = lambda self, image, context: gaussianize(image)[0]
 
 
 class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
@@ -503,89 +616,32 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
         self.prefix = "gimp_seamless"
         self.info = "Gimp style seamless image operation"
         self.category = "Advanced"
-
-        def gimpify(self, image, context):
-            pixels = numpy.copy(image)
-            xs, ys = image.shape[1], image.shape[0]
-            image = numpy.roll(image, xs * 2 + xs * 4 * (ys // 2))
-
-            sxs = xs // 2
-            sys = ys // 2
-
-            # generate the mask
-            imask = numpy.zeros((pixels.shape[0], pixels.shape[1]), dtype=float)
-            for y in range(0, sys):
-                zy0 = y / sys + 0.001
-                zy1 = 1 - y / sys + 0.001
-                for x in range(0, sxs):
-                    zx0 = 1 - x / sxs + 0.001
-                    imask[y, x] = 1 - zy0 / zx0
-                    zx1 = x / sxs + 0.001
-                    imask[y, x] = numpy.maximum((1 - zx1 / zy1), imask[y, x])
-
-            imask[imask < 0] = 0
-
-            # copy the data into the three remaining corners
-            imask[0 : sys + 1, sxs:xs] = numpy.fliplr(imask[0 : sys + 1, 0:sxs])
-            imask[-sys:ys, 0:sxs] = numpy.flipud(imask[0:sys, 0:sxs])
-            imask[-sys:ys, sxs:xs] = numpy.flipud(imask[0:sys, sxs:xs])
-            imask[sys, :] = imask[sys - 1, :]  # center line
-
-            # apply mask
-            amask = numpy.empty(pixels.shape, dtype=float)
-            amask[:, :, 0] = imask
-            amask[:, :, 1] = imask
-            amask[:, :, 2] = imask
-            amask[:, :, 3] = imask
-
-            return amask * image + (1.0 - amask) * pixels
-
-        self.payload = gimpify
+        self.payload = lambda self, image, context: gimpify(image)
 
 
-class Swizzle_IOP(image_ops.ImageOperatorGenerator):
+class HistogramSeamless_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
-        self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
-        self.props["direction"] = bpy.props.EnumProperty(
-            name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
-        )
-        self.prefix = "swizzle"
-        self.info = "Channel swizzle"
-        self.category = "Basic"
+        self.prefix = "histogram_seamless"
+        self.info = "Seamless histogram blending"
+        self.category = "Advanced"
 
         def _pl(self, image, context):
-            test_a = self.order_a.upper()
-            test_b = self.order_b.upper()
-
-            if len(test_a) != 4 or len(test_b) != 4:
-                self.report({"INFO"}, "Swizzle channel count must be 4")
-                return image
-
-            if set(test_a) != set(test_b):
-                self.report({"INFO"}, "Swizzle channels must have same names")
-                return image
-
-            first = self.order_a
-            second = self.order_b
-
-            if self.direction == "BTOA":
-                first, second = second, first
-
-            temp = image.copy()
-
-            for i in range(4):
-                fl = first[i].upper()
-                t = second.upper().index(fl)
-                if second[t] != first[i]:
-                    temp[..., t] = 1.0 - image[..., i]
-                else:
-                    temp[..., t] = image[..., i]
-
-            return temp
+            gimg, transforms = gaussianize(image)
+            blended = gimpify(gimg)
+            return degaussianize(blended, transforms)
 
         self.payload = _pl
 
+
+# class DoG_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         self.props["a"] = bpy.props.IntProperty(name="Width A", min=1, default=20)
+#         self.props["b"] = bpy.props.IntProperty(name="Width B", min=1, default=100)
+#         self.props["mp"] = bpy.props.FloatProperty(name="Treshold", min=0.0, default=1.0)
+#         self.prefix = "dog"
+#         self.info = "Difference of gaussians"
+#         self.category = "Filter"
+#         self.payload = lambda self, image, context: dog(image, self.a, self.b, self.mp)
 
 # class LaplacianBlend_IOP(image_ops.ImageOperatorGenerator):
 #     def generate(self):
