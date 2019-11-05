@@ -434,6 +434,30 @@ def normals_to_curvature(pix, intensity):
     return pix
 
 
+def curvature_to_height(image, h2, iterations=2000):
+    f = image[..., 0]
+    u = np.ones_like(f) * 0.5
+    # u = np.random.random(f.shape)
+    # h2 = (1 / (image.shape[0])) ** 2.0
+
+    # wrapping gauss seidel iteration
+    for ic in range(iterations):
+        if ic % 100 == 0:
+            print(ic)
+        t = np.roll(u, -1, axis=0)
+        t += np.roll(u, 1, axis=0)
+        t += np.roll(u, -1, axis=1)
+        t += np.roll(u, 1, axis=1)
+        t -= h2 * f
+        t *= 0.25
+        u = t
+
+    u += 0.5 - np.mean(u)
+    u = 1.0 - u
+
+    return np.dstack([u, u, u, image[..., 3]])
+
+
 def dog(pix, a, b, mp):
     pixb = pix.copy()
     pix[..., :3] = np.abs(gaussian_repeat(pix, a) - gaussian_repeat(pixb, b))[..., :3]
@@ -561,7 +585,7 @@ class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
         self.prefix = "gaussian_blur"
         self.info = "Does a Gaussian blur"
         self.category = "Basic"
-        self.payload = lambda self, image, context: gaussian(image, self.width, self.intensity)
+        self.payload = lambda self, image, context: gaussian_repeat(image, self.width)
 
 
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
@@ -696,6 +720,18 @@ class NormalsToCurvature_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Curvature map from tangent normal map"
         self.category = "Normals"
         self.payload = lambda self, image, context: normals_to_curvature(image, self.intensity)
+
+
+class CurveToHeight_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["step"] = bpy.props.FloatProperty(name="Step", min=0.00001, default=0.1)
+        self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=400)
+        self.prefix = "curvature_to_height"
+        self.info = "Height from curvature"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: curvature_to_height(
+            image, self.step, iterations=self.iterations
+        )
 
 
 # class DoG_IOP(image_ops.ImageOperatorGenerator):

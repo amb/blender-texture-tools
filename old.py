@@ -950,503 +950,503 @@ def compute_shading():
     print("fin.")
 
 
-# class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.props["atype"] = bpy.props.EnumProperty(
-#             name="A Type",
-#             items=[
-#                 ("RANDOM", "Random", "", 1),
-#                 ("ZERO", "Zero", "", 2),
-#                 ("ONES", "Ones", "", 4),
-#                 ("RANGE", "Range", "", 3),
-#             ],
-#         )
-#         self.props["btype"] = bpy.props.EnumProperty(
-#             name="B Type",
-#             items=[
-#                 ("RANDOM", "Random", "", 1),
-#                 ("ZERO", "Zero", "", 2),
-#                 ("ONES", "Ones", "", 4),
-#                 ("MIDDLE", "Middle", "", 3),
-#             ],
-#         )
-
-#         self.props["output"] = bpy.props.EnumProperty(
-#             name="Output",
-#             items=[
-#                 ("B_A", "B-A", "", 1),
-#                 ("A_B", "A-B", "", 2),
-#                 ("A", "A", "", 3),
-#                 ("B", "B", "", 4),
-#                 ("B*A", "B*A", "", 5),
-#                 ("B+A", "B+A", "", 6),
-#             ],
-#         )
-
-#         self.props["iter"] = bpy.props.IntProperty(name="Iterations", min=1, default=1000)
-#         self.props["dA"] = bpy.props.FloatProperty(name="dA", min=0.0, default=1.0)
-#         self.props["dB"] = bpy.props.FloatProperty(name="dB", min=0.0, default=0.5)
-#         self.props["feed"] = bpy.props.FloatProperty(name="Feed rate (x100)", min=0.0, default=5.5)
-#         self.props["kill"] = bpy.props.FloatProperty(name="Kill rate (x100)", min=0.0, default=6.2)
-#         self.props["time"] = bpy.props.FloatProperty(
-#             name="Timestep", min=0.001, max=1.0, default=0.9
-#         )
-#         self.props["scale"] = bpy.props.FloatProperty(
-#             name="Scale", min=0.01, default=1.0, max=100.0
-#         )
-
-#         # lizard scales: true, true, 5000, 1.0, 0.55, 0.082, 0.06, 0.9
-#         # default: false, false, 3000, 1.00, 0.3, 0.05, 0.06, 0.9
-#         # stones: ones, random, b*a, 7556, 1.00, 0.34, 0.07, 0.06, 0.84
-
-#         self.prefix = "reaction_diffusion"
-#         self.info = "Reaction diffusion"
-#         self.category = "Generator"
-
-#         def _pl(self, image, context):
-#             def laplacian(p):
-#                 ring = -p
-#                 ring[:-1, :] += p[1:, :] * 0.25
-#                 ring[-1, :] += p[0, :] * 0.25
-#                 ring[1:, :] += p[:-1, :] * 0.25
-#                 ring[0, :] += p[-1, :] * 0.25
-
-#                 ring[:, :-1] += p[:, 1:] * 0.25
-#                 ring[:, -1] += p[:, 0] * 0.25
-#                 ring[:, 1:] += p[:, :-1] * 0.25
-#                 ring[:, 0] += p[:, -1] * 0.25
-#                 return ring
-
-#             def laplacian3(p):
-#                 # TODO: broken
-#                 # is Laplacian separatable?
-#                 f = lambda m: np.convolve(m, [1, -2, 1], mode="same")
-#                 p = np.apply_along_axis(f, axis=1, arr=p)
-#                 p = np.apply_along_axis(f, axis=0, arr=p)
-#                 return p
-
-#             res = np.ones(shape=image.shape, dtype=np.float32)
-
-#             # grid init with A=1, B=0, small area B=1
-#             if self.rnda:
-#                 gridA = np.random.random(size=(*image.shape[:2],))
-#                 ix = image.shape[0]
-#                 for i in range(ix):
-#                     gridA[i, :] *= 0.5 + ((i - ix / 2) / (ix * 2.0))
-#             else:
-#                 gridA = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
-
-#             if self.rndb:
-#                 gridB = np.random.random(size=(*image.shape[:2],))
-#             else:
-#                 gridB = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
-#                 w, h = image.shape[0] // 2, image.shape[1] // 2
-#                 gridB[w - 5 : w + 5, h - 5 : h + 5] = 1.0
-
-#             lp = laplacian
-
-#             A = gridA
-#             B = gridB
-#             A2 = None
-#             B2 = None
-
-#             print("v2")
-
-#             t = self.time
-#             kf = self.kill + self.feed
-#             for _ in range(self.iter):
-#                 ab2 = A * B ** 2
-#                 A2 = A + (self.dA * lp(A) - ab2 + (1.0 - A) * self.feed) * t
-#                 B2 = B + (self.dB * lp(B) + ab2 - B * kf) * t
-#                 A = A2
-#                 B = B2
-
-#             v = B - A
-#             v -= np.min(v)
-#             v /= np.max(v)
-#             res[:, :, 0] = v
-#             res[:, :, 1] = v
-#             res[:, :, 2] = v
-
-#             return res
-
-#         def _pl2(self, image, context):
-#             import moderngl
-#             import numpy as np
-
-#             # TODO: floats instead of uint8
-
-#             ctx = moderngl.create_context()
-
-#             prog = ctx.program(
-#                 vertex_shader="""
-#                     #version 330
-
-#                     in vec2 in_vert;
-#                     out vec2 vert_pos;
-
-#                     void main() {
-#                         vert_pos = 0.5 * (in_vert + 1.0);
-#                         gl_Position = vec4(in_vert, 0.0, 1.0);
-#                     }
-#                 """,
-#                 fragment_shader="""
-#                     #version 330
-
-#                     in vec2 vert_pos;
-#                     out vec4 out_vert;
-
-#                     uniform sampler2D Texture;
-
-#                     uniform float dA = 1.0;
-#                     uniform float dB = 0.3;
-#                     uniform float feed = 0.05;
-#                     uniform float kill = 0.06;
-#                     uniform float time = 0.9;
-#                     uniform float scale = 1.0;
-#                     uniform int imgSize = 256;
-
-#                     vec4 tex(float x, float y) {
-#                         return texture(Texture, vec2(mod(x, 1.0), mod(y, 1.0)));
-#                     }
-
-#                     void main()
-#                     {
-#                         float fstep = scale/float(imgSize);
-#                         float x = vert_pos.x;
-#                         float y = vert_pos.y;
-#                         vec4 sc = tex(x, y);
-
-#                         vec4 lap = vec4(0.0);
-#                         lap += tex(x, y-fstep);
-#                         lap += tex(x, y+fstep);
-#                         lap += tex(x-fstep, y);
-#                         lap += tex(x+fstep, y);
-#                         lap += tex(x-fstep, y-fstep)*0.5;
-#                         lap += tex(x-fstep, y+fstep)*0.5;
-#                         lap += tex(x+fstep, y-fstep)*0.5;
-#                         lap += tex(x+fstep, y+fstep)*0.5;
-#                         lap /= 6.0;
-
-#                         // A2 = A + (self.dA * lp(A) - ab2 + (1.0 - A) * self.feed) * t
-#                         // B2 = B + (self.dB * lp(B) + ab2 - B * kf) * t
-
-#                         float a = sc.r;
-#                         float b = sc.g;
-#                         float ab2 = a * pow(b, 2.0);
-#                         out_vert.r = a + (dA * (lap.r - sc.r) - ab2 + (1.0 - a) * feed) * time;
-#                         out_vert.g = b + (dB * (lap.g - sc.g) + ab2 - b * (kill + feed)) * time;
-#                     }
-#                 """,
-#             )
-
-#             res = np.ones(shape=image.shape, dtype=np.float32)
-#             w, h = image.shape[0] // 2, image.shape[1] // 2
-
-#             if self.atype == "RANDOM":
-#                 A = np.random.random(size=(*image.shape[:2],))
-#             elif self.atype == "RANGE":
-#                 A = np.random.random(size=(*image.shape[:2],))
-#                 ix = image.shape[0]
-#                 for i in range(ix):
-#                     A[i, :] *= 0.5 + ((i - ix / 2) / (ix * 2.0))
-#             elif self.atype == "ONES":
-#                 A = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
-#             else:
-#                 A = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
-
-#             if self.btype == "RANDOM":
-#                 B = np.random.random(size=(*image.shape[:2],))
-#             elif self.btype == "MIDDLE":
-#                 B = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
-#                 B[w - 5 : w + 5, h - 5 : h + 5] = 1.0
-#             elif self.btype == "ONES":
-#                 B = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
-#             elif self.btype == "ZERO":
-#                 B = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
-
-#             img_in = np.empty((*image.shape[:2], 4))
-#             img_in[:, :, 0] = A
-#             img_in[:, :, 1] = B
-#             img_in[:, :, 2] = 0.0
-#             img_in[:, :, 3] = 0.0
-
-#             prog.get("imgSize", -1).value = img_in.shape[0]
-#             prog.get("dA", -1).value = self.dA
-#             prog.get("dB", -1).value = self.dB
-#             prog.get("feed", -1).value = self.feed / 100
-#             prog.get("kill", -1).value = self.kill / 100
-#             prog.get("time", -1).value = self.time
-#             prog.get("scale", -1).value = self.scale
-
-#             vertices = np.array([1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0])
-#             vbo = ctx.buffer(vertices.astype("f4").tobytes())
-#             vao = ctx.simple_vertex_array(prog, vbo, "in_vert")
-
-#             precision = "f1"
-#             np_dtype = np.uint8
-
-#             pixels = (img_in * 255.0).astype(np_dtype)
-#             # pixels = img_in.astype(np_dtype)
-#             tex = ctx.texture((*img_in.shape[:2],), 4, pixels.tobytes(), dtype=precision)
-#             tex.use()
-
-#             fbo = ctx.simple_framebuffer((*image.shape[:2],), components=4, dtype=precision)
-#             fbo.use()
-#             fbo.clear(0.0, 0.0, 0.0, 1.0)
-
-#             for _ in range(self.iter):
-#                 vao.render(moderngl.TRIANGLE_STRIP)
-#                 ctx.copy_framebuffer(tex, fbo)
-#                 # tex.write(fbo.read(components=4)) # slow
-
-#             res = numpy.frombuffer(fbo.read(dtype=precision), dtype=np_dtype).reshape(
-#                 (*image.shape[:2], 3)
-#             )
-#             res = res / 255.0
-
-#             if self.output == "B_A":
-#                 total = res[:, :, 1] - res[:, :, 0]
-#             if self.output == "A_B":
-#                 total = res[:, :, 0] - res[:, :, 1]
-#             if self.output == "A":
-#                 total = res[:, :, 0]
-#             if self.output == "B":
-#                 total = res[:, :, 1]
-#             if self.output == "B*A":
-#                 total = res[:, :, 1] * res[:, :, 0]
-#             if self.output == "B+A":
-#                 total = res[:, :, 1] + res[:, :, 0]
-
-#             total -= np.min(total)
-#             npm = np.max(total)
-#             if npm > 0.0:
-#                 total /= npm
-
-#             image[:, :, 0] = total
-#             image[:, :, 1] = total
-#             image[:, :, 2] = total
-
-#             return image
-
-#         self.payload = _pl2
-
-
-# class Base64_16x16_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.prefix = "base64"
-#         self.info = "Base64"
-#         self.category = "Debug"
-
-#         def _pl(self, image, context):
-#             import zlib
-#             import base64
-
-#             print(image.shape)
-
-#             def img_compress(img):
-#                 if img.shape[0] > 32 or img.shape[1] > 32 or img.shape[0] < 8 or img.shape[1] < 8:
-#                     print("Wrong image size.")
-#                     return None
-#                 icon = []
-#                 flatdim = img.shape[0] * img.shape[1]
-#                 for v in image.reshape((flatdim, 4)):
-#                     icon.append(int(round(v[0] * 15.0)))
-#                     icon.append(int(round(v[1] * 15.0)))
-#                     icon.append(int(round(v[2] * 7.0)))
-#                     icon.append(int(round(v[3] * 3.0)))
-
-#                 compressed = zlib.compress(bytes(icon), level=6)
-#                 print(len(icon), "=>", len(compressed))
-#                 encoded = base64.b64encode(compressed)
-#                 return repr(img.shape[0]) + "," + repr(img.shape[1]) + "," + encoded.decode("utf-8")
-
-#             compressed = img_compress(image)
-#             print(len(compressed), image.shape[0] * image.shape[1] * image.shape[2])
-#             print(compressed)
-
-#             def img_decompress(inp):
-#                 vals = inp.split(",")
-#                 w, h = int(vals[0]), int(vals[1])
-#                 decoded = base64.b64decode(vals[2])
-#                 uncompressed = zlib.decompress(decoded)
-#                 values = []
-#                 for v in range(len(uncompressed))[::4]:
-#                     values.append(uncompressed[v + 0] / 15)
-#                     values.append(uncompressed[v + 1] / 15)
-#                     values.append(uncompressed[v + 2] / 7)
-#                     values.append(uncompressed[v + 3] / 3)
-
-#                 return np.array(values).reshape((w, h, 4))
-
-#             image = img_decompress(compressed)
-
-#             # to image from icon text
-#             # to_value = {v: i for i, v in enumerate(chars)}
-#             # values = []
-#             # counter = 0
-#             # for v in icon_text:
-#             #     values.append(to_value[v] / 63)
-#             #     counter += 1
-#             #     if counter == 3:
-#             #         counter = 0
-#             #         values.append(1.0)
-
-#             # # image = image.reshape((image.shape[0] * image.shape[1], 4))
-#             # image = np.array(values, dtype=image.dtype).reshape(image.shape)
-
-#             return image
-
-#         self.payload = _pl
-
-
-# class RenderObject_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.props["object"] = bpy.props.PointerProperty(name="Target", type=bpy.types.Object)
-
-#         self.prefix = "render_object"
-#         self.info = "Simple render of selected object"
-#         self.category = "Debug"
-
-#         def _pl(self, image, context):
-#             bm = bmesh.new()
-#             bm.from_mesh(self.object.data)
-#             bmesh.ops.triangulate(bm, faces=bm.faces[:])
-
-#             datatype = np.float32
-
-#             # rays
-#             rays = np.empty((image.shape[0], image.shape[1], 2, 3), dtype=datatype)
-#             w, h = image.shape[0], image.shape[1]
-#             for x in range(w):
-#                 for y in range(h):
-#                     # ray origin
-#                     rays[x, y, 0, 0] = y * 2 / h - 1.0
-#                     rays[x, y, 0, 1] = -5.0
-#                     rays[x, y, 0, 2] = x * 2 / w - 1.0
-#                     # ray direction
-#                     rays[x, y, 1, 0] = 0.0
-#                     rays[x, y, 1, 1] = 1.0
-#                     rays[x, y, 1, 2] = 0.0
-
-#             # mesh
-#             tris = np.zeros((len(bm.faces), 3, 3), dtype=datatype)
-#             for fi, f in enumerate(bm.faces):
-#                 vv = f.verts
-#                 # tris[fi] = [i.co for i in vv]
-#                 tris[fi][0][0] = vv[0].co[0]
-#                 tris[fi][0][1] = vv[0].co[1]
-#                 tris[fi][0][2] = vv[0].co[2]
-#                 tris[fi][1][0] = vv[1].co[0]
-#                 tris[fi][1][1] = vv[1].co[1]
-#                 tris[fi][1][2] = vv[1].co[2]
-#                 tris[fi][2][0] = vv[2].co[0]
-#                 tris[fi][2][1] = vv[2].co[1]
-#                 tris[fi][2][2] = vv[2].co[2]
-#                 # v1v0 = vv[1].co - vv[0].co
-#                 # v2v0 = vv[2].co - vv[0].co
-#                 # assert v1v0.length > 0.0
-#                 # assert v2v0.length > 0.0
-
-#             bm.faces.ensure_lookup_table()
-
-#             # sun_direction = np.array(mu.Vector([0.5, -0.5, 0.5]).normalized(), dtype=datatype)
-#             # normals = np.array(
-#             #     [np.array(i.normal, dtype=datatype) for i in bm.faces], dtype=datatype
-#             # )
-
-#             print(image.shape, rays.shape, tris.shape, rays.dtype)
-#             # result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
-
-#             def rt_nb(do_a_jit=True):
-#                 import numba
-
-#                 def intersect_ray(ro, rda, vrt):
-#                     def cross(a, b):
-#                         return np.array(
-#                             [
-#                                 a[1] * b[2] - a[2] * b[1],
-#                                 a[2] * b[0] - a[0] * b[2],
-#                                 a[0] * b[1] - a[1] * b[0],
-#                             ]
-#                         )
-
-#                     def dot(a, b):
-#                         return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-#                     def tri_intersect(ro, rd, v0, v1, v2):
-#                         v1v0 = v1 - v0
-#                         v2v0 = v2 - v0
-#                         rov0 = ro - v0
-#                         n = cross(v1v0, v2v0)
-#                         q = cross(rov0, rd)
-#                         rdn = dot(rd, n)
-#                         if rdn == 0.0:
-#                             return -1.0
-#                             # return (-1.0, 0.0, 0.0)
-#                         d = 1.0 / rdn
-#                         u = d * (dot(-q, v2v0))
-#                         v = d * (dot(q, v1v0))
-#                         t = d * (dot(-n, rov0))
-#                         if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
-#                             t = -1.0
-#                         # return (t, u, v)
-#                         return t
-
-#                     c = 1.0e10
-#                     n = -1
-#                     for i in range(len(vrt) // 3):
-#                         iv = i * 3
-#                         rcast = tri_intersect(ro, rda, vrt[iv], vrt[iv + 1], vrt[iv + 2])
-#                         if rcast < c and rcast > 0.0:
-#                             c = rcast
-#                             n = i
-
-#                     return n
-
-#                 if do_a_jit:
-#                     intersect_ray = numba.njit(parallel=False)(intersect_ray)
-
-#                 result = np.empty((image.shape[0], image.shape[1]), dtype=np.float32)
-
-#                 def rnd_res(ro, rd, verts, normals, sun_direction, res):
-#                     for x in range(res.shape[0]):
-#                         print(x)
-#                         for y in numba.prange(res.shape[1]):
-#                             r = intersect_ray(ro[x, y], rd, verts)
-#                             res[x, y] = np.dot(normals[r], sun_direction) if r >= 0 else 0.0
-
-#                 rnd_res(ro, rd, verts, normals, sun_direction, result)
-
-#                 return result
-
-#             # numba is aboug 20x speedup with single core CPU
-#             # result = rt_nb(do_a_jit=True)
-
-#             def rt_glcompute():
-#                 # in: rays, tris
-#                 # out: distance, u, v, face index
-
-#                 from .bpy_amb import raycast
-#                 import importlib
-
-#                 importlib.reload(raycast)
-
-#                 rc = raycast.Raycaster(tris)
-#                 rw = rays.shape[0]
-#                 res = rc.cast(rays.reshape((rw * rw, 2, 3)))
-
-#                 return res.reshape((rw, rw, 4))
-
-#             result = rt_glcompute()
-#             dist = result[:, :, 0]
-#             dist = np.where(dist < 50.0, (dist - 4.0) / 2.0, 1.0)
-
-#             image[:, :, 0] = dist
-#             image[:, :, 1] = result[:, :, 1]
-#             image[:, :, 2] = result[:, :, 2]
-
-#             bm.free()
-#             return image
-
-#         self.payload = _pl
+class ReactionDiffusion_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["atype"] = bpy.props.EnumProperty(
+            name="A Type",
+            items=[
+                ("RANDOM", "Random", "", 1),
+                ("ZERO", "Zero", "", 2),
+                ("ONES", "Ones", "", 4),
+                ("RANGE", "Range", "", 3),
+            ],
+        )
+        self.props["btype"] = bpy.props.EnumProperty(
+            name="B Type",
+            items=[
+                ("RANDOM", "Random", "", 1),
+                ("ZERO", "Zero", "", 2),
+                ("ONES", "Ones", "", 4),
+                ("MIDDLE", "Middle", "", 3),
+            ],
+        )
+
+        self.props["output"] = bpy.props.EnumProperty(
+            name="Output",
+            items=[
+                ("B_A", "B-A", "", 1),
+                ("A_B", "A-B", "", 2),
+                ("A", "A", "", 3),
+                ("B", "B", "", 4),
+                ("B*A", "B*A", "", 5),
+                ("B+A", "B+A", "", 6),
+            ],
+        )
+
+        self.props["iter"] = bpy.props.IntProperty(name="Iterations", min=1, default=1000)
+        self.props["dA"] = bpy.props.FloatProperty(name="dA", min=0.0, default=1.0)
+        self.props["dB"] = bpy.props.FloatProperty(name="dB", min=0.0, default=0.5)
+        self.props["feed"] = bpy.props.FloatProperty(name="Feed rate (x100)", min=0.0, default=5.5)
+        self.props["kill"] = bpy.props.FloatProperty(name="Kill rate (x100)", min=0.0, default=6.2)
+        self.props["time"] = bpy.props.FloatProperty(
+            name="Timestep", min=0.001, max=1.0, default=0.9
+        )
+        self.props["scale"] = bpy.props.FloatProperty(
+            name="Scale", min=0.01, default=1.0, max=100.0
+        )
+
+        # lizard scales: true, true, 5000, 1.0, 0.55, 0.082, 0.06, 0.9
+        # default: false, false, 3000, 1.00, 0.3, 0.05, 0.06, 0.9
+        # stones: ones, random, b*a, 7556, 1.00, 0.34, 0.07, 0.06, 0.84
+
+        self.prefix = "reaction_diffusion"
+        self.info = "Reaction diffusion"
+        self.category = "Generator"
+
+        def _pl(self, image, context):
+            def laplacian(p):
+                ring = -p
+                ring[:-1, :] += p[1:, :] * 0.25
+                ring[-1, :] += p[0, :] * 0.25
+                ring[1:, :] += p[:-1, :] * 0.25
+                ring[0, :] += p[-1, :] * 0.25
+
+                ring[:, :-1] += p[:, 1:] * 0.25
+                ring[:, -1] += p[:, 0] * 0.25
+                ring[:, 1:] += p[:, :-1] * 0.25
+                ring[:, 0] += p[:, -1] * 0.25
+                return ring
+
+            def laplacian3(p):
+                # TODO: broken
+                # is Laplacian separatable?
+                f = lambda m: np.convolve(m, [1, -2, 1], mode="same")
+                p = np.apply_along_axis(f, axis=1, arr=p)
+                p = np.apply_along_axis(f, axis=0, arr=p)
+                return p
+
+            res = np.ones(shape=image.shape, dtype=np.float32)
+
+            # grid init with A=1, B=0, small area B=1
+            if self.rnda:
+                gridA = np.random.random(size=(*image.shape[:2],))
+                ix = image.shape[0]
+                for i in range(ix):
+                    gridA[i, :] *= 0.5 + ((i - ix / 2) / (ix * 2.0))
+            else:
+                gridA = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
+
+            if self.rndb:
+                gridB = np.random.random(size=(*image.shape[:2],))
+            else:
+                gridB = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+                w, h = image.shape[0] // 2, image.shape[1] // 2
+                gridB[w - 5 : w + 5, h - 5 : h + 5] = 1.0
+
+            lp = laplacian
+
+            A = gridA
+            B = gridB
+            A2 = None
+            B2 = None
+
+            print("v2")
+
+            t = self.time
+            kf = self.kill + self.feed
+            for _ in range(self.iter):
+                ab2 = A * B ** 2
+                A2 = A + (self.dA * lp(A) - ab2 + (1.0 - A) * self.feed) * t
+                B2 = B + (self.dB * lp(B) + ab2 - B * kf) * t
+                A = A2
+                B = B2
+
+            v = B - A
+            v -= np.min(v)
+            v /= np.max(v)
+            res[:, :, 0] = v
+            res[:, :, 1] = v
+            res[:, :, 2] = v
+
+            return res
+
+        def _pl2(self, image, context):
+            import moderngl
+            import numpy as np
+
+            # TODO: floats instead of uint8
+
+            ctx = moderngl.create_context()
+
+            prog = ctx.program(
+                vertex_shader="""
+                    #version 330
+
+                    in vec2 in_vert;
+                    out vec2 vert_pos;
+
+                    void main() {
+                        vert_pos = 0.5 * (in_vert + 1.0);
+                        gl_Position = vec4(in_vert, 0.0, 1.0);
+                    }
+                """,
+                fragment_shader="""
+                    #version 330
+
+                    in vec2 vert_pos;
+                    out vec4 out_vert;
+
+                    uniform sampler2D Texture;
+
+                    uniform float dA = 1.0;
+                    uniform float dB = 0.3;
+                    uniform float feed = 0.05;
+                    uniform float kill = 0.06;
+                    uniform float time = 0.9;
+                    uniform float scale = 1.0;
+                    uniform int imgSize = 256;
+
+                    vec4 tex(float x, float y) {
+                        return texture(Texture, vec2(mod(x, 1.0), mod(y, 1.0)));
+                    }
+
+                    void main()
+                    {
+                        float fstep = scale/float(imgSize);
+                        float x = vert_pos.x;
+                        float y = vert_pos.y;
+                        vec4 sc = tex(x, y);
+
+                        vec4 lap = vec4(0.0);
+                        lap += tex(x, y-fstep);
+                        lap += tex(x, y+fstep);
+                        lap += tex(x-fstep, y);
+                        lap += tex(x+fstep, y);
+                        lap += tex(x-fstep, y-fstep)*0.5;
+                        lap += tex(x-fstep, y+fstep)*0.5;
+                        lap += tex(x+fstep, y-fstep)*0.5;
+                        lap += tex(x+fstep, y+fstep)*0.5;
+                        lap /= 6.0;
+
+                        // A2 = A + (self.dA * lp(A) - ab2 + (1.0 - A) * self.feed) * t
+                        // B2 = B + (self.dB * lp(B) + ab2 - B * kf) * t
+
+                        float a = sc.r;
+                        float b = sc.g;
+                        float ab2 = a * pow(b, 2.0);
+                        out_vert.r = a + (dA * (lap.r - sc.r) - ab2 + (1.0 - a) * feed) * time;
+                        out_vert.g = b + (dB * (lap.g - sc.g) + ab2 - b * (kill + feed)) * time;
+                    }
+                """,
+            )
+
+            res = np.ones(shape=image.shape, dtype=np.float32)
+            w, h = image.shape[0] // 2, image.shape[1] // 2
+
+            if self.atype == "RANDOM":
+                A = np.random.random(size=(*image.shape[:2],))
+            elif self.atype == "RANGE":
+                A = np.random.random(size=(*image.shape[:2],))
+                ix = image.shape[0]
+                for i in range(ix):
+                    A[i, :] *= 0.5 + ((i - ix / 2) / (ix * 2.0))
+            elif self.atype == "ONES":
+                A = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
+            else:
+                A = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+
+            if self.btype == "RANDOM":
+                B = np.random.random(size=(*image.shape[:2],))
+            elif self.btype == "MIDDLE":
+                B = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+                B[w - 5 : w + 5, h - 5 : h + 5] = 1.0
+            elif self.btype == "ONES":
+                B = np.ones(shape=(*image.shape[:2],), dtype=np.float32)
+            elif self.btype == "ZERO":
+                B = np.zeros(shape=(*image.shape[:2],), dtype=np.float32)
+
+            img_in = np.empty((*image.shape[:2], 4))
+            img_in[:, :, 0] = A
+            img_in[:, :, 1] = B
+            img_in[:, :, 2] = 0.0
+            img_in[:, :, 3] = 0.0
+
+            prog.get("imgSize", -1).value = img_in.shape[0]
+            prog.get("dA", -1).value = self.dA
+            prog.get("dB", -1).value = self.dB
+            prog.get("feed", -1).value = self.feed / 100
+            prog.get("kill", -1).value = self.kill / 100
+            prog.get("time", -1).value = self.time
+            prog.get("scale", -1).value = self.scale
+
+            vertices = np.array([1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0])
+            vbo = ctx.buffer(vertices.astype("f4").tobytes())
+            vao = ctx.simple_vertex_array(prog, vbo, "in_vert")
+
+            precision = "f1"
+            np_dtype = np.uint8
+
+            pixels = (img_in * 255.0).astype(np_dtype)
+            # pixels = img_in.astype(np_dtype)
+            tex = ctx.texture((*img_in.shape[:2],), 4, pixels.tobytes(), dtype=precision)
+            tex.use()
+
+            fbo = ctx.simple_framebuffer((*image.shape[:2],), components=4, dtype=precision)
+            fbo.use()
+            fbo.clear(0.0, 0.0, 0.0, 1.0)
+
+            for _ in range(self.iter):
+                vao.render(moderngl.TRIANGLE_STRIP)
+                ctx.copy_framebuffer(tex, fbo)
+                # tex.write(fbo.read(components=4)) # slow
+
+            res = numpy.frombuffer(fbo.read(dtype=precision), dtype=np_dtype).reshape(
+                (*image.shape[:2], 3)
+            )
+            res = res / 255.0
+
+            if self.output == "B_A":
+                total = res[:, :, 1] - res[:, :, 0]
+            if self.output == "A_B":
+                total = res[:, :, 0] - res[:, :, 1]
+            if self.output == "A":
+                total = res[:, :, 0]
+            if self.output == "B":
+                total = res[:, :, 1]
+            if self.output == "B*A":
+                total = res[:, :, 1] * res[:, :, 0]
+            if self.output == "B+A":
+                total = res[:, :, 1] + res[:, :, 0]
+
+            total -= np.min(total)
+            npm = np.max(total)
+            if npm > 0.0:
+                total /= npm
+
+            image[:, :, 0] = total
+            image[:, :, 1] = total
+            image[:, :, 2] = total
+
+            return image
+
+        self.payload = _pl2
+
+
+class Base64_16x16_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "base64"
+        self.info = "Base64"
+        self.category = "Debug"
+
+        def _pl(self, image, context):
+            import zlib
+            import base64
+
+            print(image.shape)
+
+            def img_compress(img):
+                if img.shape[0] > 32 or img.shape[1] > 32 or img.shape[0] < 8 or img.shape[1] < 8:
+                    print("Wrong image size.")
+                    return None
+                icon = []
+                flatdim = img.shape[0] * img.shape[1]
+                for v in image.reshape((flatdim, 4)):
+                    icon.append(int(round(v[0] * 15.0)))
+                    icon.append(int(round(v[1] * 15.0)))
+                    icon.append(int(round(v[2] * 7.0)))
+                    icon.append(int(round(v[3] * 3.0)))
+
+                compressed = zlib.compress(bytes(icon), level=6)
+                print(len(icon), "=>", len(compressed))
+                encoded = base64.b64encode(compressed)
+                return repr(img.shape[0]) + "," + repr(img.shape[1]) + "," + encoded.decode("utf-8")
+
+            compressed = img_compress(image)
+            print(len(compressed), image.shape[0] * image.shape[1] * image.shape[2])
+            print(compressed)
+
+            def img_decompress(inp):
+                vals = inp.split(",")
+                w, h = int(vals[0]), int(vals[1])
+                decoded = base64.b64decode(vals[2])
+                uncompressed = zlib.decompress(decoded)
+                values = []
+                for v in range(len(uncompressed))[::4]:
+                    values.append(uncompressed[v + 0] / 15)
+                    values.append(uncompressed[v + 1] / 15)
+                    values.append(uncompressed[v + 2] / 7)
+                    values.append(uncompressed[v + 3] / 3)
+
+                return np.array(values).reshape((w, h, 4))
+
+            image = img_decompress(compressed)
+
+            # to image from icon text
+            # to_value = {v: i for i, v in enumerate(chars)}
+            # values = []
+            # counter = 0
+            # for v in icon_text:
+            #     values.append(to_value[v] / 63)
+            #     counter += 1
+            #     if counter == 3:
+            #         counter = 0
+            #         values.append(1.0)
+
+            # # image = image.reshape((image.shape[0] * image.shape[1], 4))
+            # image = np.array(values, dtype=image.dtype).reshape(image.shape)
+
+            return image
+
+        self.payload = _pl
+
+
+class RenderObject_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["object"] = bpy.props.PointerProperty(name="Target", type=bpy.types.Object)
+
+        self.prefix = "render_object"
+        self.info = "Simple render of selected object"
+        self.category = "Debug"
+
+        def _pl(self, image, context):
+            bm = bmesh.new()
+            bm.from_mesh(self.object.data)
+            bmesh.ops.triangulate(bm, faces=bm.faces[:])
+
+            datatype = np.float32
+
+            # rays
+            rays = np.empty((image.shape[0], image.shape[1], 2, 3), dtype=datatype)
+            w, h = image.shape[0], image.shape[1]
+            for x in range(w):
+                for y in range(h):
+                    # ray origin
+                    rays[x, y, 0, 0] = y * 2 / h - 1.0
+                    rays[x, y, 0, 1] = -5.0
+                    rays[x, y, 0, 2] = x * 2 / w - 1.0
+                    # ray direction
+                    rays[x, y, 1, 0] = 0.0
+                    rays[x, y, 1, 1] = 1.0
+                    rays[x, y, 1, 2] = 0.0
+
+            # mesh
+            tris = np.zeros((len(bm.faces), 3, 3), dtype=datatype)
+            for fi, f in enumerate(bm.faces):
+                vv = f.verts
+                # tris[fi] = [i.co for i in vv]
+                tris[fi][0][0] = vv[0].co[0]
+                tris[fi][0][1] = vv[0].co[1]
+                tris[fi][0][2] = vv[0].co[2]
+                tris[fi][1][0] = vv[1].co[0]
+                tris[fi][1][1] = vv[1].co[1]
+                tris[fi][1][2] = vv[1].co[2]
+                tris[fi][2][0] = vv[2].co[0]
+                tris[fi][2][1] = vv[2].co[1]
+                tris[fi][2][2] = vv[2].co[2]
+                # v1v0 = vv[1].co - vv[0].co
+                # v2v0 = vv[2].co - vv[0].co
+                # assert v1v0.length > 0.0
+                # assert v2v0.length > 0.0
+
+            bm.faces.ensure_lookup_table()
+
+            # sun_direction = np.array(mu.Vector([0.5, -0.5, 0.5]).normalized(), dtype=datatype)
+            # normals = np.array(
+            #     [np.array(i.normal, dtype=datatype) for i in bm.faces], dtype=datatype
+            # )
+
+            print(image.shape, rays.shape, tris.shape, rays.dtype)
+            # result = np.zeros((image.shape[0], image.shape[1]), dtype=datatype)
+
+            def rt_nb(do_a_jit=True):
+                import numba
+
+                def intersect_ray(ro, rda, vrt):
+                    def cross(a, b):
+                        return np.array(
+                            [
+                                a[1] * b[2] - a[2] * b[1],
+                                a[2] * b[0] - a[0] * b[2],
+                                a[0] * b[1] - a[1] * b[0],
+                            ]
+                        )
+
+                    def dot(a, b):
+                        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+                    def tri_intersect(ro, rd, v0, v1, v2):
+                        v1v0 = v1 - v0
+                        v2v0 = v2 - v0
+                        rov0 = ro - v0
+                        n = cross(v1v0, v2v0)
+                        q = cross(rov0, rd)
+                        rdn = dot(rd, n)
+                        if rdn == 0.0:
+                            return -1.0
+                            # return (-1.0, 0.0, 0.0)
+                        d = 1.0 / rdn
+                        u = d * (dot(-q, v2v0))
+                        v = d * (dot(q, v1v0))
+                        t = d * (dot(-n, rov0))
+                        if u < 0.0 or u > 1.0 or v < 0.0 or u + v > 1.0:
+                            t = -1.0
+                        # return (t, u, v)
+                        return t
+
+                    c = 1.0e10
+                    n = -1
+                    for i in range(len(vrt) // 3):
+                        iv = i * 3
+                        rcast = tri_intersect(ro, rda, vrt[iv], vrt[iv + 1], vrt[iv + 2])
+                        if rcast < c and rcast > 0.0:
+                            c = rcast
+                            n = i
+
+                    return n
+
+                if do_a_jit:
+                    intersect_ray = numba.njit(parallel=False)(intersect_ray)
+
+                result = np.empty((image.shape[0], image.shape[1]), dtype=np.float32)
+
+                def rnd_res(ro, rd, verts, normals, sun_direction, res):
+                    for x in range(res.shape[0]):
+                        print(x)
+                        for y in numba.prange(res.shape[1]):
+                            r = intersect_ray(ro[x, y], rd, verts)
+                            res[x, y] = np.dot(normals[r], sun_direction) if r >= 0 else 0.0
+
+                rnd_res(ro, rd, verts, normals, sun_direction, result)
+
+                return result
+
+            # numba is aboug 20x speedup with single core CPU
+            # result = rt_nb(do_a_jit=True)
+
+            def rt_glcompute():
+                # in: rays, tris
+                # out: distance, u, v, face index
+
+                from .bpy_amb import raycast
+                import importlib
+
+                importlib.reload(raycast)
+
+                rc = raycast.Raycaster(tris)
+                rw = rays.shape[0]
+                res = rc.cast(rays.reshape((rw * rw, 2, 3)))
+
+                return res.reshape((rw, rw, 4))
+
+            result = rt_glcompute()
+            dist = result[:, :, 0]
+            dist = np.where(dist < 50.0, (dist - 4.0) / 2.0, 1.0)
+
+            image[:, :, 0] = dist
+            image[:, :, 1] = result[:, :, 1]
+            image[:, :, 2] = result[:, :, 2]
+
+            bm.free()
+            return image
+
+        self.payload = _pl
