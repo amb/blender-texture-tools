@@ -461,7 +461,7 @@ def curvature_to_height(image, h2, iterations=2000):
     return np.dstack([u, u, u, image[..., 3]])
 
 
-def normals_to_height(image, h2, iterations=2000):
+def normals_to_height(image, iterations=2000):
     f = image[..., 0]
     u = np.ones_like(f)
 
@@ -470,22 +470,27 @@ def normals_to_height(image, h2, iterations=2000):
     vectors[..., 1] = image[..., 1] - 0.5
     vectors[..., 2] = image[..., 2]
 
-    n = np.roll(vectors[..., 0], 1, axis=1)
-    n -= np.roll(vectors[..., 0], -1, axis=1)
-    n += np.roll(vectors[..., 1], 1, axis=0)
-    n -= np.roll(vectors[..., 1], -1, axis=0)
-    n *= 0.125 * image[..., 3]
+    for k in range(5, -1, -1):
+        # multigrid
+        k = 2 ** k
+        print("grid step:", k)
 
-    for ic in range(iterations):
-        if ic % 100 == 0:
-            print(ic)
-        t = np.roll(u, -1, axis=0)
-        t += np.roll(u, 1, axis=0)
-        t += np.roll(u, -1, axis=1)
-        t += np.roll(u, 1, axis=1)
-        t *= 0.25
+        n = np.roll(vectors[..., 0], k, axis=1)
+        n -= np.roll(vectors[..., 0], -k, axis=1)
+        n += np.roll(vectors[..., 1], k, axis=0)
+        n -= np.roll(vectors[..., 1], -k, axis=0)
+        n *= 0.125 * image[..., 3]
 
-        u = t + n
+        for ic in range(iterations):
+            if ic % 100 == 0:
+                print(ic)
+            t = np.roll(u, -k, axis=0)
+            t += np.roll(u, k, axis=0)
+            t += np.roll(u, -k, axis=1)
+            t += np.roll(u, k, axis=1)
+            t *= 0.25
+
+            u = t + n
 
     u = -u
     u -= np.min(u)
@@ -801,13 +806,13 @@ class CurveToHeight_IOP(image_ops.ImageOperatorGenerator):
 
 class NormalsToHeight_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["step"] = bpy.props.FloatProperty(name="Step", min=0.00001, default=0.1)
+        # self.props["step"] = bpy.props.FloatProperty(name="Step", min=0.00001, default=0.1)
         self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=400)
         self.prefix = "normals_to_height"
         self.info = "Normals to height"
         self.category = "Normals"
         self.payload = lambda self, image, context: normals_to_height(
-            image, self.step, iterations=self.iterations
+            image, iterations=self.iterations
         )
 
 
