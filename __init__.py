@@ -1,5 +1,3 @@
-# -*- coding:utf-8 -*-
-
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -24,7 +22,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 21),
+    "version": (0, 1, 22),
     "blender": (2, 81, 0),
 }
 
@@ -409,11 +407,26 @@ def normals_to_curvature(pix, s, intensity):
     y_vec = np.array([1, 0, 0], dtype=np.float32)
     x_vec = np.array([0, 1, 0], dtype=np.float32)
 
-    for x in range(1, pix.shape[1] - 1):
-        for y in range(1, pix.shape[0] - 1):
-            yd = np.dot(-x_vec, vectors[y - 1, x]) + np.dot(x_vec, vectors[y + 1, x])
-            xd = np.dot(y_vec, vectors[y, x - 1]) + np.dot(-y_vec, vectors[y, x + 1])
-            curve[y, x] = (xd + yd) * intensity + 0.5
+    yd = vectors.dot(x_vec)
+    xd = vectors.dot(y_vec)
+
+    # curve[0,0] = yd[1,0]
+    curve[:-1, :] += yd[1:, :]
+    curve[-1, :] += yd[0, :]
+
+    # curve[0,0] = yd[-1,0]
+    curve[1:, :] -= yd[:-1, :]
+    curve[0, :] -= yd[-1, :]
+
+    # curve[0,0] = xd[1,0]
+    curve[:, :-1] -= xd[:, 1:]
+    curve[:, -1] -= xd[:, 0]
+
+    # curve[0,0] = xd[-1,0]
+    curve[:, 1:] += xd[:, :-1]
+    curve[:, 0] += xd[:, -1]
+
+    curve = curve * intensity + 0.5
 
     pix[..., 0] = curve
     pix[..., 1] = curve
@@ -517,6 +530,21 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
+class Normalize_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "normalize"
+        self.info = "Normalize"
+        self.category = "Basic"
+
+        def _pl(self, image, context):
+            tmp = image[..., 3]
+            res = normalize(image)
+            res[..., 3] = tmp
+            return res
+
+        self.payload = _pl
+
+
 class Sharpen_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
@@ -536,6 +564,21 @@ class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: gaussian(image, self.width, self.intensity)
 
 
+class Bilateral_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["source"] = bpy.props.EnumProperty(
+            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
+        )
+        self.props["sigma_a"] = bpy.props.FloatProperty(name="Sigma A", min=0.01, default=3.0)
+        self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.1)
+        self.prefix = "bilateral_filter"
+        self.info = "Bilateral"
+        self.category = "Basic"
+        self.payload = lambda self, image, context: bilateral_filter(
+            image, self.sigma_a, self.sigma_b, self.source
+        )
+
+
 class HiPass_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
@@ -553,50 +596,36 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
         # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "hipass_balance"
         self.info = "Remove low frequencies from the image"
-        self.category = "Advanced"
+        self.category = "Balance"
         self.payload = lambda self, image, context: hi_pass_balance(image, self.width, self.zoom)
 
 
-class Bilateral_IOP(image_ops.ImageOperatorGenerator):
+class ContrastBalance_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["source"] = bpy.props.EnumProperty(
-            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
-        )
-        self.props["sigma_a"] = bpy.props.FloatProperty(name="Sigma A", min=0.01, default=3.0)
-        self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.1)
-        self.prefix = "bilateral_filter"
-        self.info = "Bilateral"
-        self.category = "Advanced"
-        self.payload = lambda self, image, context: bilateral_filter(
-            image, self.sigma_a, self.sigma_b, self.source
-        )
+        self.prefix = "contrast_balance"
+        self.info = "Balance contrast"
+        self.category = "Balance"
 
+        self.props["gA"] = bpy.props.IntProperty(name="Range", min=1, max=256, default=20)
+        self.props["gB"] = bpy.props.IntProperty(name="Error", min=1, max=256, default=40)
+        self.props["strength"] = bpy.props.FloatProperty(name="Strength", min=0.0, default=1.0)
 
-class Normals_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.props["source"] = bpy.props.EnumProperty(
-            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
-        )
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-        self.prefix = "normals"
-        self.info = "(Very rough estimate) normal map from RGB"
-        self.category = "Advanced"
-        self.payload = lambda self, image, context: normals_simple(
-            image, self.width, self.intensity, self.source
-        )
+        def _pl(self, image, context):
+            tmp = image.copy()
 
+            # squared error
+            gcr = gaussian_repeat(tmp, self.gA)
+            error = (tmp - gcr) ** 2
+            mask = -gaussian_repeat(error, self.gB)
+            mask -= np.min(mask)
+            mask /= np.max(mask)
+            mask = (mask - 0.5) * self.strength + 1.0
+            res = gcr + mask * (tmp - gcr)
 
-class NormalsToCurvature_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-        self.prefix = "normals_to_curvature"
-        self.info = "Curvature map from tangent normal map"
-        self.category = "Advanced"
-        self.payload = lambda self, image, context: normals_to_curvature(
-            image, self.width, self.intensity
-        )
+            res[..., 3] = tmp[..., 3]
+            return res
+
+        self.payload = _pl
 
 
 class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
@@ -644,47 +673,31 @@ class HistogramSeamless_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
-class ContrastBalance_IOP(image_ops.ImageOperatorGenerator):
+class Normals_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.prefix = "contrast_balance"
-        self.info = "Balance contrast"
-        self.category = "Advanced"
-
-        self.props["gA"] = bpy.props.IntProperty(name="Range", min=1, max=256, default=20)
-        self.props["gB"] = bpy.props.IntProperty(name="Error", min=1, max=256, default=40)
-        self.props["strength"] = bpy.props.FloatProperty(name="Strength", min=0.0, default=1.0)
-
-        def _pl(self, image, context):
-            tmp = image.copy()
-
-            # squared error
-            gcr = gaussian_repeat(tmp, self.gA)
-            error = (tmp - gcr) ** 2
-            mask = -gaussian_repeat(error, self.gB)
-            mask -= np.min(mask)
-            mask /= np.max(mask)
-            mask = (mask - 0.5) * self.strength + 1.0
-            res = gcr + mask * (tmp - gcr)
-
-            res[..., 3] = tmp[..., 3]
-            return res
-
-        self.payload = _pl
+        self.props["source"] = bpy.props.EnumProperty(
+            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
+        )
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "normals"
+        self.info = "(Very rough estimate) normal map from RGB"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: normals_simple(
+            image, self.width, self.intensity, self.source
+        )
 
 
-class Normalize_IOP(image_ops.ImageOperatorGenerator):
+class NormalsToCurvature_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.prefix = "normalize"
-        self.info = "Normalize"
-        self.category = "Basic"
-
-        def _pl(self, image, context):
-            tmp = image[..., 3]
-            res = normalize(image)
-            res[..., 3] = tmp
-            return res
-
-        self.payload = _pl
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "normals_to_curvature"
+        self.info = "Curvature map from tangent normal map"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: normals_to_curvature(
+            image, self.width, self.intensity
+        )
 
 
 # class DoG_IOP(image_ops.ImageOperatorGenerator):
