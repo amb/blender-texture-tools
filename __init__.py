@@ -452,10 +452,66 @@ def curvature_to_height(image, h2, iterations=2000):
         t *= 0.25
         u = t
 
-    u += 0.5 - np.mean(u)
+    u -= np.mean(u)
+    u /= max(abs(np.min(u)), abs(np.max(u)))
+    u *= 0.5
+    u += 0.5
     u = 1.0 - u
 
     return np.dstack([u, u, u, image[..., 3]])
+
+
+def normals_to_height(image, h2, iterations=2000):
+    f = image[..., 0]
+    u = np.ones_like(f)
+
+    vectors = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.float32)
+    vectors[..., 0] = 0.5 - image[..., 0]
+    vectors[..., 1] = image[..., 1] - 0.5
+    vectors[..., 2] = image[..., 2]
+
+    n = np.roll(vectors[..., 0], 1, axis=1)
+    n -= np.roll(vectors[..., 0], -1, axis=1)
+    n += np.roll(vectors[..., 1], 1, axis=0)
+    n -= np.roll(vectors[..., 1], -1, axis=0)
+    n *= 0.125 * image[..., 3]
+
+    for ic in range(iterations):
+        if ic % 100 == 0:
+            print(ic)
+        t = np.roll(u, -1, axis=0)
+        t += np.roll(u, 1, axis=0)
+        t += np.roll(u, -1, axis=1)
+        t += np.roll(u, 1, axis=1)
+        t *= 0.25
+
+        u = t + n
+
+    u = -u
+    u -= np.min(u)
+    u /= np.max(u)
+    # u -= np.mean(u)
+    # u /= max(abs(np.min(u)), abs(np.max(u)))
+    # u *= 0.5
+    # u += 0.5
+    # u = 1.0 - u
+
+    return np.dstack([u, u, u, image[..., 3]])
+
+
+def fill_alpha(image, style="black"):
+    if style == "black":
+        for c in range(3):
+            image[..., c] *= image[..., 3]
+        image[..., 3] = 1.0
+        return image
+    else:
+        cols = [0.5, 0.5, 1.0]
+        A = image[..., 3]
+        for c in range(3):
+            image[..., c] = cols[c] * (1 - A) + image[..., c] * A
+        image[..., 3] = 1.0
+        return image
 
 
 def dog(pix, a, b, mp):
@@ -576,6 +632,15 @@ class Sharpen_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Simple sharpen"
         self.category = "Basic"
         self.payload = lambda self, image, context: sharpen(image, self.intensity)
+
+
+class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["style"] = bpy.props.FloatProperty(name="Style", min=0.0, default=1.0)
+        self.prefix = "fill_alpha"
+        self.info = "Fill alpha with color or normal"
+        self.category = "Basic"
+        self.payload = lambda self, image, context: fill_alpha(image, style="normal")
 
 
 class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
@@ -730,6 +795,18 @@ class CurveToHeight_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Height from curvature"
         self.category = "Normals"
         self.payload = lambda self, image, context: curvature_to_height(
+            image, self.step, iterations=self.iterations
+        )
+
+
+class NormalsToHeight_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["step"] = bpy.props.FloatProperty(name="Step", min=0.00001, default=0.1)
+        self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=400)
+        self.prefix = "normals_to_height"
+        self.info = "Normals to height"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: normals_to_height(
             image, self.step, iterations=self.iterations
         )
 
