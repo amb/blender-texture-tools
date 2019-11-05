@@ -396,7 +396,7 @@ def normals_simple(pix, s, intensity, source):
     return retarr
 
 
-def normals_to_curvature(pix, s, intensity):
+def normals_to_curvature(pix, intensity):
     curve = np.zeros((pix.shape[0], pix.shape[1]), dtype=np.float32)
     vectors = np.zeros((pix.shape[0], pix.shape[1], 3), dtype=np.float32)
 
@@ -680,7 +680,7 @@ class Normals_IOP(image_ops.ImageOperatorGenerator):
         )
         self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-        self.prefix = "normals"
+        self.prefix = "height_to_normals"
         self.info = "(Very rough estimate) normal map from RGB"
         self.category = "Normals"
         self.payload = lambda self, image, context: normals_simple(
@@ -690,14 +690,12 @@ class Normals_IOP(image_ops.ImageOperatorGenerator):
 
 class NormalsToCurvature_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
+        # self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "normals_to_curvature"
         self.info = "Curvature map from tangent normal map"
         self.category = "Normals"
-        self.payload = lambda self, image, context: normals_to_curvature(
-            image, self.width, self.intensity
-        )
+        self.payload = lambda self, image, context: normals_to_curvature(image, self.intensity)
 
 
 # class DoG_IOP(image_ops.ImageOperatorGenerator):
