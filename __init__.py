@@ -22,7 +22,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 22),
+    "version": (0, 1, 23),
     "blender": (2, 81, 0),
 }
 
@@ -71,9 +71,14 @@ def grayscale(ssp):
     return ssp
 
 
-def normalize(pix):
+def normalize(pix, save_alpha=False):
+    if save_alpha:
+        A = pix[..., 3]
     t = pix - numpy.min(pix)
-    return t / numpy.max(t)
+    t = t / numpy.max(t)
+    if save_alpha:
+        t[..., 3] = A
+    return t
 
 
 def sobel_x(pix, intensity):
@@ -357,11 +362,9 @@ def bilateral_filter(pix, s, intensity, source):
 def normals_simple(pix, s, intensity, source):
     if s > 0:
         pix = gaussian_repeat(pix, s)
-
+    pix = grayscale(pix)
     if source == "SOBEL":
         pix = sobel(pix, 1.0)
-    else:
-        pix = grayscale(pix)
 
     pix = normalize(pix)
     sshape = pix.shape
@@ -385,14 +388,14 @@ def normals_simple(pix, s, intensity, source):
     arr[..., 0] *= m
     arr[..., 1] *= m
     arr[..., 2] *= m
-    vectors = arr
+    vectors = arr * 0.5
 
     # normals format
     retarr = numpy.zeros(sshape)
-    retarr[:, :, 0] = 0.5 - vectors[:, :, 0]
-    retarr[:, :, 1] = vectors[:, :, 1] + 0.5
-    retarr[:, :, 2] = vectors[:, :, 2]
-    retarr[:, :, 3] = 1.0
+    retarr[:, :, 0] = 0.5 + vectors[:, :, 0]
+    retarr[:, :, 1] = 0.5 + vectors[:, :, 1]
+    retarr[:, :, 2] = vectors[:, :, 2] * 2.0
+    retarr[:, :, 3] = pix[..., 3]
     return retarr
 
 
@@ -419,12 +422,12 @@ def normals_to_curvature(pix, intensity):
     curve[0, :] -= yd[-1, :]
 
     # curve[0,0] = xd[1,0]
-    curve[:, :-1] -= xd[:, 1:]
-    curve[:, -1] -= xd[:, 0]
+    curve[:, :-1] += xd[:, 1:]
+    curve[:, -1] += xd[:, 0]
 
     # curve[0,0] = xd[-1,0]
-    curve[:, 1:] += xd[:, :-1]
-    curve[:, 0] += xd[:, -1]
+    curve[:, 1:] -= xd[:, :-1]
+    curve[:, 0] -= xd[:, -1]
 
     curve = curve * intensity + 0.5
 
@@ -436,6 +439,7 @@ def normals_to_curvature(pix, intensity):
 
 def curvature_to_height(image, h2, iterations=2000):
     f = image[..., 0]
+    A = image[..., 3]
     u = np.ones_like(f) * 0.5
     # u = np.random.random(f.shape)
     # h2 = (1 / (image.shape[0])) ** 2.0
@@ -450,20 +454,24 @@ def curvature_to_height(image, h2, iterations=2000):
         t += np.roll(u, 1, axis=1)
         t -= h2 * f
         t *= 0.25
-        u = t
+        u = t * A
 
-    u -= np.mean(u)
-    u /= max(abs(np.min(u)), abs(np.max(u)))
-    u *= 0.5
-    u += 0.5
-    u = 1.0 - u
+    # u -= np.mean(u)
+    # u /= max(abs(np.min(u)), abs(np.max(u)))
+    # u *= 0.5
+    # u += 0.5
+    # u = 1.0 - u
+
+    u = -u
+    u -= np.min(u)
+    u /= np.max(u)
 
     return np.dstack([u, u, u, image[..., 3]])
 
 
 def normals_to_height(image, iterations=2000):
-    f = image[..., 0]
-    u = np.ones_like(f)
+    A = image[..., 3]
+    u = np.ones_like(image[..., 0])
 
     vectors = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.float32)
     vectors[..., 0] = 0.5 - image[..., 0]
@@ -490,17 +498,72 @@ def normals_to_height(image, iterations=2000):
             t += np.roll(u, k, axis=1)
             t *= 0.25
 
+            # zero alpha = zero height
             u = t + n
+            u = u * A + np.max(u) * (1 - A)
 
     u = -u
     u -= np.min(u)
     u /= np.max(u)
+
+    # u *= image[..., 3]
+
     # u -= np.mean(u)
     # u /= max(abs(np.min(u)), abs(np.max(u)))
     # u *= 0.5
     # u += 0.5
     # u = 1.0 - u
 
+    return np.dstack([u, u, u, image[..., 3]])
+
+
+def delight_simple(image, dd, iterations=500):
+    A = image[..., 3]
+    u = np.ones_like(image[..., 0])
+
+    grads = np.zeros((image.shape[0], image.shape[1], 2), dtype=np.float32)
+    grads[..., 0] = (np.roll(image[..., 0], 1, axis=0) - image[..., 0]) * dd
+    grads[..., 1] = (image[..., 0] - np.roll(image[..., 0], 1, axis=1)) * dd
+    # grads[..., 0] = (image[..., 0] - 0.5) * (dd)
+    # grads[..., 1] = (image[..., 0] - 0.5) * (dd)
+    for k in range(5, -1, -1):
+        # multigrid
+        k = 2 ** k
+        print("grid step:", k)
+
+        n = np.roll(grads[..., 0], k, axis=1)
+        n -= np.roll(grads[..., 0], -k, axis=1)
+        n += np.roll(grads[..., 1], k, axis=0)
+        n -= np.roll(grads[..., 1], -k, axis=0)
+        n *= 0.125 * image[..., 3]
+
+        for ic in range(iterations):
+            if ic % 100 == 0:
+                print(ic)
+            t = np.roll(u, -k, axis=0)
+            t += np.roll(u, k, axis=0)
+            t += np.roll(u, -k, axis=1)
+            t += np.roll(u, k, axis=1)
+            t *= 0.25
+
+            # zero alpha = zero height
+            u = t + n
+            u = u * A + np.max(u) * (1 - A)
+
+    u = -u
+    u -= np.min(u)
+    u /= np.max(u)
+
+    # u *= image[..., 3]
+
+    # u -= np.mean(u)
+    # u /= max(abs(np.min(u)), abs(np.max(u)))
+    # u *= 0.5
+    # u += 0.5
+    # u = 1.0 - u
+
+    # return np.dstack([(u - image[..., 0]) * 0.5 + 0.5, u, u, image[..., 3]])
+    u = (image[..., 0] - u) * 0.5 + 0.5
     return np.dstack([u, u, u, image[..., 3]])
 
 
@@ -615,6 +678,53 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
+class Fractal_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["count"] = bpy.props.IntProperty(name="Count", min=1, default=2)
+        self.props["style"] = bpy.props.EnumProperty(
+            name="Style",
+            items=[
+                ("blend", "Blend", "", 1),
+                ("multiply", "Multiply", "", 2),
+                ("multiply_b", "Multiply B", "", 3),
+            ],
+        )
+        self.prefix = "fractal"
+        self.info = "Fractalize image"
+        self.category = "Basic"
+
+        def _pl(self, image, context):
+            A = image[..., 3]
+            iw, ih = image.shape[1], image.shape[0]
+            iwh, ihh = iw // 2, ih // 2
+
+            pix = image.copy()
+            for i in range(self.count):
+                if self.style == "blend":
+                    smol = pix[::2, ::2, :] * 0.5
+                    pix *= 0.5
+                    pix[:ihh, :iwh, :] += smol
+                    pix[-ihh:, :iwh, :] += smol
+                    pix[:ihh, -iwh:, :] += smol
+                    pix[-ihh:, -iwh:, :] += smol
+                else:
+                    smol = pix[::2, ::2, :].copy() * 2.0
+                    pix[:ihh, :iwh, :] *= smol
+                    pix[ihh:, :iwh, :] *= smol
+                    pix[:ihh, iwh:, :] *= smol
+                    pix[ihh:, iwh:, :] *= smol
+
+                    if self.style == "multiply":
+                        pix *= 0.5
+                    else:
+                        pix = (pix - 0.5) * 0.5 + 0.5
+
+            # pix[..., 3] = A
+            return pix
+
+        self.payload = _pl
+
+
 class Normalize_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "normalize"
@@ -639,13 +749,25 @@ class Sharpen_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: sharpen(image, self.intensity)
 
 
+class Sobel_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "sobel"
+        self.info = "Sobel"
+        self.category = "Basic"
+        self.payload = lambda self, image, context: sobel(grayscale(image), self.intensity)
+
+
 class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["style"] = bpy.props.FloatProperty(name="Style", min=0.0, default=1.0)
+        self.props["style"] = bpy.props.EnumProperty(
+            name="Style",
+            items=[("black", "Black color", "", 1), ("tangent", "Neutral tangent", "", 2)],
+        )
         self.prefix = "fill_alpha"
         self.info = "Fill alpha with color or normal"
         self.category = "Basic"
-        self.payload = lambda self, image, context: fill_alpha(image, style="normal")
+        self.payload = lambda self, image, context: fill_alpha(image, style=self.style)
 
 
 class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
@@ -807,12 +929,24 @@ class CurveToHeight_IOP(image_ops.ImageOperatorGenerator):
 class NormalsToHeight_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         # self.props["step"] = bpy.props.FloatProperty(name="Step", min=0.00001, default=0.1)
-        self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=400)
+        self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
         self.prefix = "normals_to_height"
         self.info = "Normals to height"
         self.category = "Normals"
         self.payload = lambda self, image, context: normals_to_height(
             image, iterations=self.iterations
+        )
+
+
+class Delight_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["flip"] = bpy.props.BoolProperty(name="Flip direction", default=False)
+        self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
+        self.prefix = "delighting"
+        self.info = "Delight simple"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: delight_simple(
+            image, -1 if self.flip else 1, iterations=self.iterations
         )
 
 
