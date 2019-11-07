@@ -694,7 +694,7 @@ class Fractal_IOP(image_ops.ImageOperatorGenerator):
         self.category = "Basic"
 
         def _pl(self, image, context):
-            A = image[..., 3]
+            # A = image[..., 3]
             iw, ih = image.shape[1], image.shape[0]
             iwh, ihh = iw // 2, ih // 2
 
