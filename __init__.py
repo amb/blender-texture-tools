@@ -444,7 +444,7 @@ def curvature_to_height(image, h2, iterations=2000):
     # u = np.random.random(f.shape)
     # h2 = (1 / (image.shape[0])) ** 2.0
 
-    # wrapping gauss seidel iteration
+    # periodic gauss seidel iteration
     for ic in range(iterations):
         if ic % 100 == 0:
             print(ic)
@@ -745,7 +745,7 @@ class Sharpen_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "sharpen"
         self.info = "Simple sharpen"
-        self.category = "Basic"
+        self.category = "Filter"
         self.payload = lambda self, image, context: sharpen(image, self.intensity)
 
 
@@ -754,7 +754,7 @@ class Sobel_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "sobel"
         self.info = "Sobel"
-        self.category = "Basic"
+        self.category = "Filter"
         self.payload = lambda self, image, context: sobel(grayscale(image), self.intensity)
 
 
@@ -776,7 +776,7 @@ class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "gaussian_blur"
         self.info = "Does a Gaussian blur"
-        self.category = "Basic"
+        self.category = "Filter"
         self.payload = lambda self, image, context: gaussian_repeat(image, self.width)
 
 
@@ -789,7 +789,7 @@ class Bilateral_IOP(image_ops.ImageOperatorGenerator):
         self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.1)
         self.prefix = "bilateral_filter"
         self.info = "Bilateral"
-        self.category = "Basic"
+        self.category = "Filter"
         self.payload = lambda self, image, context: bilateral_filter(
             image, self.sigma_a, self.sigma_b, self.source
         )
@@ -801,7 +801,7 @@ class HiPass_IOP(image_ops.ImageOperatorGenerator):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "high_pass"
         self.info = "High pass"
-        self.category = "Basic"
+        self.category = "Filter"
         self.payload = lambda self, image, context: hi_pass(image, self.width, self.intensity)
 
 
