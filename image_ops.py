@@ -23,6 +23,7 @@ import numpy as np
 from .bpy_amb import master_ops
 from .bpy_amb import utils
 import importlib
+
 importlib.reload(master_ops)
 importlib.reload(utils)
 
@@ -33,6 +34,16 @@ def get_teximage(context):
         if area.type == "IMAGE_EDITOR":
             teximage = area.spaces.active.image
             break
+    if teximage is not None and teximage.size[1] != 0:
+        return teximage
+    else:
+        return None
+
+
+def get_area_image(context):
+    teximage = None
+    teximage = context.area.spaces.active.image
+
     if teximage is not None and teximage.size[1] != 0:
         return teximage
     else:
@@ -57,11 +68,14 @@ class ImageOperator(master_ops.MacroOperator):
         pass
 
     def execute(self, context):
-
-        image = get_teximage(bpy.context)
+        image = get_area_image(bpy.context)
         sourcepixels = np.float32(np.array(image.pixels).reshape(image.size[1], image.size[0], 4))
+
         with utils.Profile_this(lines=10):
             sourcepixels = self.payload(sourcepixels, context)
+
+        if image.size[1] != sourcepixels.shape[0] or image.size[0] != sourcepixels.shape[1]:
+            image.scale(sourcepixels.shape[1], sourcepixels.shape[0])
         image.pixels = sourcepixels.reshape((image.size[0] * image.size[1] * 4,))
 
         return {"FINISHED"}

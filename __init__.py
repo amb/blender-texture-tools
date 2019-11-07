@@ -740,6 +740,64 @@ class Normalize_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
+class CropToP2_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "crop_to_power"
+        self.info = "Crops the middle of the image to power of twos"
+        self.category = "Basic"
+
+        def _pl(self, image, context):
+            h, w = image.shape[0], image.shape[1]
+
+            offx = 0
+            offy = 0
+
+            wpow = int(numpy.log2(w))
+            hpow = int(numpy.log2(h))
+
+            offx = (w - 2 ** wpow) // 2
+            offy = (h - 2 ** hpow) // 2
+
+            if w > 2 ** wpow:
+                w = 2 ** wpow
+            if h > 2 ** hpow:
+                h = 2 ** hpow
+            # crop to center
+            image = image[offy : offy + h, offx : offx + w]
+
+            return image
+
+        self.payload = _pl
+
+
+class CropToSquare_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "crop_to_square"
+        self.info = "Crop the middle to square with two divisible height and width"
+        self.category = "Basic"
+
+        def _pl(self, image, context):
+            h, w = image.shape[0], image.shape[1]
+
+            if h > w:
+                h = w
+            if w > h:
+                w = h
+
+            offx = w // 2
+            offy = h // 2
+
+            xt = offx - 1
+            yt = offy - 1
+
+            # crop to center
+            image = image[offy - yt : offy + yt, offx - xt : offx + xt]
+
+            return image
+
+        self.payload = _pl
+
+
 class Sharpen_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
