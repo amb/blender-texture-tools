@@ -18,7 +18,9 @@
 
 
 import bpy  # noqa:F401
+
 import numpy as np
+import cupy as cup
 from collections import OrderedDict
 
 from .bpy_amb import master_ops
@@ -113,9 +115,14 @@ class ImageOperator(master_ops.MacroOperator):
         else:
             target_image = image
 
-        sourcepixels = np.float32(
-            np.array(source_image.pixels).reshape(source_image.size[1], source_image.size[0], 4)
-        )
+        if self.force_numpy:
+            sourcepixels = np.array(source_image.pixels[:], dtype=np.float32).reshape(
+                source_image.size[1], source_image.size[0], 4
+            )
+        else:
+            sourcepixels = cup.array(source_image.pixels[:], dtype=cup.float32).reshape(
+                source_image.size[1], source_image.size[0], 4
+            )
 
         with utils.Profile_this(lines=10):
             sourcepixels = self.payload(sourcepixels, context)
@@ -126,17 +133,19 @@ class ImageOperator(master_ops.MacroOperator):
         ):
             target_image.scale(sourcepixels.shape[1], sourcepixels.shape[0])
 
-        target_image.pixels = sourcepixels.reshape(
-            (sourcepixels.shape[0] * sourcepixels.shape[1] * 4,)
-        )
-
+        # target_image.pixels = sourcepixels.reshape(
+        #     (sourcepixels.shape[0] * sourcepixels.shape[1] * 4,)
+        # )
+        target_image.pixels = sourcepixels.ravel().tolist()
         return {"FINISHED"}
 
 
 class ImageOperatorGenerator(master_ops.OperatorGenerator):
     def __init__(self, master_name):
         self.init_begin(master_name)
+        self.force_numpy = False
         self.generate()
         self.init_end()
         self.name = "IMAGE_OT_" + self.name
         self.create_op(ImageOperator, "image")
+        self.op.force_numpy = self.force_numpy
