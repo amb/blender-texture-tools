@@ -69,6 +69,57 @@ def neighbour_average(ig):
     return (ig[1:-1, :-2] + ig[1:-1, 2:] + ig[:-2, 1:-1] + ig[:-2, 1:-1]) * 0.25
 
 
+def explicit_cross(a, b):
+    x = a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1]
+    y = a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2]
+    z = a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+    return cup.dstack([x, y, z])
+
+
+def aroll0(o, i, d):
+    if d > 0:
+        k = d
+        o[:-k, :] = i[k:, :]
+        o[-k:, :] = i[:k, :]
+    elif d < 0:
+        k = -d
+        o[k:, :] = i[:-k, :]
+        o[:k, :] = i[-k:, :]
+
+
+def aroll1(o, i, d):
+    if d > 0:
+        k = d
+        o[:, :-k] = i[:, k:]
+        o[:, -k:] = i[:, :k]
+    elif d < 0:
+        k = -d
+        o[:, k:] = i[:, :-k]
+        o[:, :k] = i[:, -k:]
+
+
+def addroll0(o, i, d):
+    if d > 0:
+        k = d
+        o[:-k, :] += i[k:, :]
+        o[-k:, :] += i[:k, :]
+    elif d < 0:
+        k = -d
+        o[k:, :] += i[:-k, :]
+        o[:k, :] += i[-k:, :]
+
+
+def addroll1(o, i, d):
+    if d > 0:
+        k = d
+        o[:, :-k] += i[:, k:]
+        o[:, -k:] += i[:, :k]
+    elif d < 0:
+        k = -d
+        o[:, k:] += i[:, :-k]
+        o[:, :k] += i[:, -k:]
+
+
 def convolution(ssp, intens, sfil):
     # source, intensity, convolution matrix
     tpx = cup.zeros(ssp.shape, dtype=float)
@@ -361,19 +412,16 @@ def bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
     win_width = int(cup.ceil(3 * sigma_s))
     wgt_sum = cup.ones(img_in.shape) * eps
     result = img_in * eps
+    off = np.empty_like(img_in, dtype=np.float32)
 
-    # TODO: mix the steps to remove artifacts
+    assert off.dtype == img_in.dtype
+    assert off.shape == img_in.shape
+
     for shft_x in range(-win_width, win_width + 1):
-        # shft_y = 0
-        # off = cup.roll(img_in, [shft_y, shft_x], axis=[0, 1])
-        # w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
-        # tw = w * gsi((off - img_in) ** 2, sigma_v)
-        # result += off * tw
-        # wgt_sum += tw
-
         for shft_y in range(-win_width, win_width + 1):
-            # shft_x = 0
-            off = cup.roll(img_in, [shft_y, shft_x], axis=[0, 1])
+            aroll0(off, img_in, shft_y)
+            aroll1(off, off, shft_x)
+
             w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
             tw = w * gsi((off - img_in) ** 2, sigma_v)
             result += off * tw
@@ -385,14 +433,17 @@ def bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
 
 def bilateral_filter(pix, s, intensity, source):
     # multiply by alpha
-    pix[..., 0] *= pix[..., 3]
-    pix[..., 1] *= pix[..., 3]
-    pix[..., 2] *= pix[..., 3]
+    # pix[..., 0] *= pix[..., 3]
+    # pix[..., 1] *= pix[..., 3]
+    # pix[..., 2] *= pix[..., 3]
 
-    if source == "SOBEL":
-        sb = sobel(pix, 1.0)
-    else:
-        sb = pix
+    # TODO: this
+    # if source == "SOBEL":
+    #     sb = sobel(pix, 1.0)
+    # else:
+    #     sb = pix
+
+    sb = pix
 
     print("R")
     # image, spatial, range
@@ -405,11 +456,52 @@ def bilateral_filter(pix, s, intensity, source):
     return pix
 
 
-def explicit_cross(a, b):
-    x = a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1]
-    y = a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2]
-    z = a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
-    return cup.dstack([x, y, z])
+def median_filter_blobs(pix, s, picked="center"):
+    ph, pw = pix.shape[0], pix.shape[1]
+
+    pick = 0
+    if picked == "center":
+        pick = s
+    if picked == "end":
+        pick = s * 2 - 1
+
+    temp = pix.copy()
+    r = cup.zeros((ph, s * 2, 4), dtype=np.float32)
+    for x in range(pw):
+        if x - s >= 0 and x + s <= pw:
+            r[:, :, :] = temp[:, x - s : x + s, :]
+
+        if x - s < 0:
+            dp = s - x
+            r[:, dp:, :] = temp[:, : x + s, :]
+            r[:, :dp, :] = temp[:, -dp:, :]
+
+        if x + s > pw:
+            dp = x + s - pw
+            r[:, :-dp, :] = temp[:, x - s :, :]
+            r[:, -dp:, :] = temp[:, :dp, :]
+
+        pix[:, x, :] = cup.sort(r, axis=1)[:, pick, :]
+
+    temp = pix.copy()
+    r = cup.zeros((s * 2, pw, 4), dtype=np.float32)
+    for y in range(ph):
+        if y - s >= 0 and y + s <= ph:
+            r[:, :, :] = temp[y - s : y + s, :, :]
+
+        if y - s < 0:
+            dp = s - y
+            r[dp:, :, :] = temp[: y + s, :, :]
+            r[:dp, :, :] = temp[-dp:, :, :]
+
+        if y + s > pw:
+            dp = y + s - pw
+            r[:-dp, :, :] = temp[y - s :, :, :]
+            r[-dp:, :, :] = temp[:dp, :, :]
+
+        pix[y, :, :] = cup.sort(r, axis=0)[pick, :, :]
+
+    return pix
 
 
 def normals_simple(pix, s, intensity, source):
@@ -484,6 +576,11 @@ def normals_to_curvature(pix, intensity):
     curve[:, 1:] -= xd[:, :-1]
     curve[:, 0] -= xd[:, -1]
 
+    # normalize
+    dv = max(abs(cup.min(curve)), abs(cup.max(curve)))
+    curve /= dv
+
+    # 0 = 0.5 grey
     curve = curve * intensity + 0.5
 
     pix[..., 0] = curve
@@ -496,26 +593,31 @@ def curvature_to_height(image, h2, iterations=2000):
     f = image[..., 0]
     A = image[..., 3]
     u = cup.ones_like(f) * 0.5
-    # u = cup.random.random(f.shape)
-    # h2 = (1 / (image.shape[0])) ** 2.0
+
+    k = 1
+    t = np.empty_like(u, dtype=np.float32)
 
     # periodic gauss seidel iteration
     for ic in range(iterations):
         if ic % 100 == 0:
             print(ic)
-        t = cup.roll(u, -1, axis=0)
-        t += cup.roll(u, 1, axis=0)
-        t += cup.roll(u, -1, axis=1)
-        t += cup.roll(u, 1, axis=1)
+
+        # roll k, axis=0
+        t[:-k, :] = u[k:, :]
+        t[-k:, :] = u[:k, :]
+        # roll -k, axis=0
+        t[k:, :] += u[:-k, :]
+        t[:k, :] += u[-k:, :]
+        # roll k, axis=1
+        t[:, :-k] += u[:, k:]
+        t[:, -k:] += u[:, :k]
+        # roll -k, axis=1
+        t[:, k:] += u[:, :-k]
+        t[:, :k] += u[:, -k:]
+
         t -= h2 * f
         t *= 0.25
         u = t * A
-
-    # u -= cup.mean(u)
-    # u /= max(abs(cup.min(u)), abs(cup.max(u)))
-    # u *= 0.5
-    # u += 0.5
-    # u = 1.0 - u
 
     u = -u
     u -= cup.min(u)
@@ -524,7 +626,7 @@ def curvature_to_height(image, h2, iterations=2000):
     return cup.dstack([u, u, u, image[..., 3]])
 
 
-def normals_to_height(image, iterations=2000):
+def normals_to_height(image, grid_steps, iterations=2000):
     # A = image[..., 3]
     ih, iw = image.shape[0], image.shape[1]
     u = cup.ones((ih, iw), dtype=np.float32) * 0.5
@@ -536,7 +638,7 @@ def normals_to_height(image, iterations=2000):
 
     t = np.empty_like(u, dtype=np.float32)
 
-    for k in range(5, -1, -1):
+    for k in range(grid_steps, -1, -1):
         # multigrid
         k = 2 ** k
         print("grid step:", k)
@@ -551,16 +653,16 @@ def normals_to_height(image, iterations=2000):
             if ic % 100 == 0:
                 print(ic)
 
-            # k, axis=0
+            # roll k, axis=0
             t[:-k, :] = u[k:, :]
             t[-k:, :] = u[:k, :]
-            # -k, axis=0
+            # roll -k, axis=0
             t[k:, :] += u[:-k, :]
             t[:k, :] += u[-k:, :]
-            # k, axis=1
+            # roll k, axis=1
             t[:, :-k] += u[:, k:]
             t[:, -k:] += u[:, :k]
-            # -k, axis=1
+            # roll -k, axis=1
             t[:, k:] += u[:, :-k]
             t[:, :k] += u[:, -k:]
 
@@ -874,11 +976,13 @@ class Sharpen_IOP(image_ops.ImageOperatorGenerator):
 
 class Sobel_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "sobel"
         self.info = "Sobel"
         self.category = "Filter"
-        self.payload = lambda self, image, context: sobel(grayscale(image), self.intensity)
+        self.payload = lambda self, image, context: normalize(
+            sobel(grayscale(image), 1.0), save_alpha=True
+        )
 
 
 class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
@@ -896,25 +1000,46 @@ class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
 class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "gaussian_blur"
         self.info = "Does a Gaussian blur"
         self.category = "Filter"
         self.payload = lambda self, image, context: gaussian_repeat(image, self.width)
 
 
+class BlobMedian_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["style"] = bpy.props.EnumProperty(
+            name="Style",
+            items=[
+                ("start", "Erode", "", 1),
+                ("center", "Neutral", "", 2),
+                ("end", "Dilate", "", 3),
+            ],
+        )
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
+        self.prefix = "blob_median"
+        self.info = "Blob median filter"
+        self.category = "Filter"
+        self.payload = lambda self, image, context: median_filter_blobs(
+            image, self.width, picked=self.style
+        )
+
+
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["source"] = bpy.props.EnumProperty(
-            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
-        )
+        # self.props["source"] = bpy.props.EnumProperty(
+        #     name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
+        # )
         self.props["sigma_a"] = bpy.props.FloatProperty(name="Sigma A", min=0.01, default=3.0)
-        self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.3)
-        self.prefix = "bilateral_filter"
+        self.props["sigma_b"] = bpy.props.FloatProperty(
+            name="Sigma B", min=0.01, max=1.0, default=0.3
+        )
+        self.prefix = "bilateral"
         self.info = "Bilateral"
         self.category = "Filter"
         self.payload = lambda self, image, context: bilateral_filter(
-            image, self.sigma_a, self.sigma_b, self.source
+            image, self.sigma_a, self.sigma_b, ""
         )
 
 
@@ -1055,13 +1180,13 @@ class CurveToHeight_IOP(image_ops.ImageOperatorGenerator):
 
 class NormalsToHeight_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        # self.props["step"] = bpy.props.FloatProperty(name="Step", min=0.00001, default=0.1)
+        self.props["grid"] = bpy.props.IntProperty(name="Grid subd", min=1, default=4)
         self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
         self.prefix = "normals_to_height"
         self.info = "Normals to height"
         self.category = "Normals"
         self.payload = lambda self, image, context: normals_to_height(
-            image, iterations=self.iterations
+            image, self.grid, iterations=self.iterations
         )
 
 
