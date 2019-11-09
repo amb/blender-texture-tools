@@ -30,15 +30,7 @@ from .bpy_amb import utils
 
 import numpy as np
 
-import bpy
-from . import image_ops
-import importlib
-
-importlib.reload(image_ops)
-importlib.reload(utils)
-
 CUDA_ACTIVE = False
-
 try:
     import cupy as cup
 
@@ -50,6 +42,13 @@ except Exception as e:
     import cupy as cup
 
     CUDA_ACTIVE = True
+
+import bpy
+from . import image_ops
+import importlib
+
+importlib.reload(image_ops)
+importlib.reload(utils)
 
 
 def gauss_curve(x):
@@ -64,6 +63,10 @@ def gauss_curve_np(x):
     res = np.array([np.exp(-((i * (2 / x)) ** 2)) for i in range(-x, x + 1)], dtype=np.float32)
     res /= np.sum(res)
     return res
+
+
+def neighbour_average(ig):
+    return (ig[1:-1, :-2] + ig[1:-1, 2:] + ig[:-2, 1:-1] + ig[:-2, 1:-1]) * 0.25
 
 
 def convolution(ssp, intens, sfil):
@@ -188,7 +191,6 @@ def hi_pass(pix, s, intensity):
 
 def gaussian_repeat_fit(pix, s):
     rf = s
-
     pix[0, :] = (pix[0, :] + pix[-1, :]) * 0.5
     pix[-1, :] = pix[0, :]
     for i in range(1, rf):
@@ -328,6 +330,7 @@ def hi_pass_balance(pix, s, zoom):
     pixmin = np.min(pix)
     pixmax = np.max(pix)
     med = (pixmin + pixmax) / 2
+    # TODO: np.mean
     gas = gaussian_repeat_np(pix - med, s) + med
     pix = (pix - gas) * 0.5 + 0.5
     for c in range(3):
@@ -361,12 +364,12 @@ def bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
 
     # TODO: mix the steps to remove artifacts
     for shft_x in range(-win_width, win_width + 1):
-        shft_y = 0
-        off = cup.roll(img_in, [shft_y, shft_x], axis=[0, 1])
-        w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
-        tw = w * gsi((off - img_in) ** 2, sigma_v)
-        result += off * tw
-        wgt_sum += tw
+        # shft_y = 0
+        # off = cup.roll(img_in, [shft_y, shft_x], axis=[0, 1])
+        # w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
+        # tw = w * gsi((off - img_in) ** 2, sigma_v)
+        # result += off * tw
+        # wgt_sum += tw
 
         for shft_y in range(-win_width, win_width + 1):
             # shft_x = 0
@@ -522,13 +525,16 @@ def curvature_to_height(image, h2, iterations=2000):
 
 
 def normals_to_height(image, iterations=2000):
-    A = image[..., 3]
-    u = cup.ones_like(image[..., 0])
+    # A = image[..., 3]
+    ih, iw = image.shape[0], image.shape[1]
+    u = cup.ones((ih, iw), dtype=np.float32) * 0.5
 
-    vectors = cup.zeros((image.shape[0], image.shape[1], 3), dtype=cup.float32)
+    vectors = cup.zeros((ih, iw, 3), dtype=cup.float32)
     vectors[..., 0] = 0.5 - image[..., 0]
     vectors[..., 1] = image[..., 1] - 0.5
     vectors[..., 2] = image[..., 2]
+
+    t = np.empty_like(u, dtype=np.float32)
 
     for k in range(5, -1, -1):
         # multigrid
@@ -539,32 +545,33 @@ def normals_to_height(image, iterations=2000):
         n -= cup.roll(vectors[..., 0], -k, axis=1)
         n += cup.roll(vectors[..., 1], k, axis=0)
         n -= cup.roll(vectors[..., 1], -k, axis=0)
-        n *= 0.125 * image[..., 3]
+        n *= 0.125
 
         for ic in range(iterations):
             if ic % 100 == 0:
                 print(ic)
-            t = cup.roll(u, -k, axis=0)
-            t += cup.roll(u, k, axis=0)
-            t += cup.roll(u, -k, axis=1)
-            t += cup.roll(u, k, axis=1)
-            t *= 0.25
 
-            # zero alpha = zero height
+            # k, axis=0
+            t[:-k, :] = u[k:, :]
+            t[-k:, :] = u[:k, :]
+            # -k, axis=0
+            t[k:, :] += u[:-k, :]
+            t[:k, :] += u[-k:, :]
+            # k, axis=1
+            t[:, :-k] += u[:, k:]
+            t[:, -k:] += u[:, :k]
+            # -k, axis=1
+            t[:, k:] += u[:, :-k]
+            t[:, :k] += u[:, -k:]
+
+            t *= 0.25
             u = t + n
-            u = u * A + cup.max(u) * (1 - A)
+            # zero alpha = zero height
+            # u = u * A + cup.max(u) * (1 - A)
 
     u = -u
     u -= cup.min(u)
     u /= cup.max(u)
-
-    # u *= image[..., 3]
-
-    # u -= cup.mean(u)
-    # u /= max(abs(cup.min(u)), abs(cup.max(u)))
-    # u *= 0.5
-    # u += 0.5
-    # u = 1.0 - u
 
     return cup.dstack([u, u, u, image[..., 3]])
 
@@ -902,7 +909,7 @@ class Bilateral_IOP(image_ops.ImageOperatorGenerator):
             name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
         )
         self.props["sigma_a"] = bpy.props.FloatProperty(name="Sigma A", min=0.01, default=3.0)
-        self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.1)
+        self.props["sigma_b"] = bpy.props.FloatProperty(name="Sigma B", min=0.01, default=0.3)
         self.prefix = "bilateral_filter"
         self.info = "Bilateral"
         self.category = "Filter"

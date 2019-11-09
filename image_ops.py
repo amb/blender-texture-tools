@@ -20,7 +20,12 @@
 import bpy  # noqa:F401
 
 import numpy as np
-import cupy as cup
+
+try:
+    import cupy as cup
+except Exception:
+    cup = np
+
 from collections import OrderedDict
 
 from .bpy_amb import master_ops
