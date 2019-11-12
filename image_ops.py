@@ -21,9 +21,13 @@ import bpy  # noqa:F401
 
 import numpy as np
 
+CUDA_ACTIVE = False
 try:
     import cupy as cup
+
+    CUDA_ACTIVE = True
 except Exception:
+    CUDA_ACTIVE = False
     cup = np
 
 from collections import OrderedDict
@@ -58,7 +62,7 @@ def get_area_image(context):
         return None
 
 
-def create(lc):
+def create(lc, additional_classes):
     """ create(locals()) """
     load_these = []
     for name, obj in lc.copy().items():
@@ -95,7 +99,15 @@ def create(lc):
             row.prop(context.scene.texture_tools, "global" + "_target")
 
     pbuild = master_ops.PanelBuilder(
-        "texture_tools", load_these, _panel_draw, _props, "OBUILD", "IMAGE_EDITOR", "UI", "Image"
+        "texture_tools",
+        load_these,
+        _panel_draw,
+        _props,
+        "OBUILD",
+        "IMAGE_EDITOR",
+        "UI",
+        "Image",
+        additional_classes,
     )
 
     return pbuild.register_params, pbuild.unregister_params
