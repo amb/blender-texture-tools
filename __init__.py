@@ -71,10 +71,22 @@ class BTT_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
 
     def draw(self, context):
-        row = self.layout.row()
+
         if CUDA_ACTIVE is False:
+            info_text = (
+                "The button below should automatically install required CUDA libs.\n"
+                "You need to run the reload scripts command in Blender to activate the\n"
+                " functionality after the installation finishes, or restart Blender."
+            )
+            col = self.layout.box().column(align=True)
+            for l in info_text.split("\n"):
+                row = col.row()
+                row.label(text=l)
+            # col.separator()
+            row = self.layout.row()
             row.operator(BTT_InstallLibraries.bl_idname, text="Install CUDA acceleration library")
         else:
+            row = self.layout.row()
             row.label(text="All optional libraries installed")
 
 
