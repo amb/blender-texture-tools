@@ -22,7 +22,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 23),
+    "version": (0, 1, 24),
     "blender": (2, 81, 0),
 }
 
@@ -174,8 +174,13 @@ def blur(pix, s, intensity):
     return convolution(pix, intensity, cup.ones((1 + s * 2, 1 + s * 2), dtype=float))
 
 
-def sharpen(pix, intensity):
-    return convolution(pix, intensity, cup.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]))
+def sharpen(pix, width, intensity):
+    # return convolution(pix, intensity, cup.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]))
+    A = pix[..., 3]
+    gas = gaussian_repeat(pix, width)
+    pix += (pix - gas) * intensity
+    pix[..., 3] = A
+    return pix
 
 
 def grayscale(ssp):
@@ -298,7 +303,6 @@ def gaussian_repeat_fit(pix, s):
     return gaussian_repeat(pix, s)
 
 
-# https://stackoverflow.com/questions/32655686/histogram-matching-of-two-images-in-python-2-x
 def hist_match(source, template):
     """
     Adjust the pixel values of a grayscale image such that its histogram
@@ -833,12 +837,99 @@ def gimpify(image):
     return amask * image + (1.0 - amask) * pixels
 
 
+def inpaint_tangents(pixels, threshold):
+    # invalid = pixels[:, :, 2] < 0.5 + (self.tolerance * 0.5)
+    invalid = pixels[:, :, 2] < threshold
+    # n2 = (
+    #     ((pixels[:, :, 0] - 0.5) * 2) ** 2
+    #     + ((pixels[:, :, 1] - 0.5) * 2) ** 2
+    #     + ((pixels[:, :, 2] - 0.5) * 2) ** 2
+    # )
+    # invalid |= (n2 < 0.9) | (n2 > 1.1)
+
+    # grow selection
+    for _ in range(2):
+        invalid[0, :] = False
+        invalid[-1, :] = False
+        invalid[:, 0] = False
+        invalid[:, -1] = False
+
+        invalid = (
+            np.roll(invalid, 1, axis=0)
+            | np.roll(invalid, -1, axis=0)
+            | np.roll(invalid, 1, axis=1)
+            | np.roll(invalid, -1, axis=1)
+        )
+
+    pixels[invalid] = np.array([0.5, 0.5, 1.0, 1.0])
+
+    invalid[0, :] = False
+    invalid[-1, :] = False
+    invalid[:, 0] = False
+    invalid[:, -1] = False
+
+    # fill
+    front = np.copy(invalid)
+    locs = [(0, -1, 1), (0, 1, -1), (1, -1, 1), (1, 1, -1)]
+    for i in range(4):
+        print("fill step:", i)
+        for l in locs:
+            r = np.roll(front, l[1], axis=l[0])
+            a = (r != front) & front
+            pixels[a] = pixels[np.roll(a, l[2], axis=l[0])]
+            front[a] = False
+
+    cl = np.roll(invalid, -1, axis=0)
+    cr = np.roll(invalid, 1, axis=0)
+    uc = np.roll(invalid, -1, axis=1)
+    bc = np.roll(invalid, 1, axis=1)
+
+    # smooth
+    for i in range(4):
+        print("smooth step:", i)
+        pixels[invalid] = (pixels[invalid] + pixels[cl] + pixels[cr] + pixels[uc] + pixels[bc]) / 5
+
+    return pixels
+
+
+def normalize_tangents(image):
+    ih, iw = image.shape[0], image.shape[1]
+    vectors = cup.zeros((ih, iw, 3), dtype=cup.float32)
+    vectors[..., 0] = image[..., 0] - 0.5
+    vectors[..., 1] = image[..., 1] - 0.5
+    vectors[..., 2] = image[..., 2] - 0.5
+
+    vectors = (vectors.T / np.linalg.norm(vectors, axis=2)).T * 0.5
+
+    retarr = cup.empty_like(image)
+    retarr[:, :, 0] = 0.5 + vectors[:, :, 0]
+    retarr[:, :, 1] = 0.5 + vectors[:, :, 1]
+    retarr[:, :, 2] = 0.5 + vectors[:, :, 2]
+    retarr[:, :, 3] = image[..., 3]
+
+    return retarr
+
+
 class Grayscale_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "grayscale"
         self.info = "Grayscale from RGB"
         self.category = "Basic"
         self.payload = lambda self, image, context: grayscale(image)
+
+
+class Random_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "random"
+        self.info = "Random RGB pixels"
+        self.category = "Basic"
+
+        def _pl(self, image, context):
+            t = np.random.random(image.shape)
+            t[..., 3] = 1.0
+            return t
+
+        self.payload = _pl
 
 
 class Swizzle_IOP(image_ops.ImageOperatorGenerator):
@@ -1007,11 +1098,12 @@ class CropToSquare_IOP(image_ops.ImageOperatorGenerator):
 
 class Sharpen_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=2, default=5)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=0.6)
         self.prefix = "sharpen"
         self.info = "Simple sharpen"
         self.category = "Filter"
-        self.payload = lambda self, image, context: sharpen(image, self.intensity)
+        self.payload = lambda self, image, context: sharpen(image, self.width, self.intensity)
 
 
 class Sobel_IOP(image_ops.ImageOperatorGenerator):
@@ -1242,6 +1334,27 @@ class Delight_IOP(image_ops.ImageOperatorGenerator):
         )
 
 
+class InpaintTangents_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        # self.props["flip"] = bpy.props.BoolProperty(name="Flip direction", default=False)
+        # self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
+        self.props["threshold"] = bpy.props.FloatProperty(
+            name="Threshold", min=0.1, max=0.9, default=0.5
+        )
+        self.prefix = "inpaint_invalid"
+        self.info = "Inpaint invalid tangents"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: inpaint_tangents(image, self.threshold)
+
+
+class NormalizeTangents_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "normalize_tangents"
+        self.info = "Make all tangents length 1"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: normalize_tangents(image)
+
+
 # class DoG_IOP(image_ops.ImageOperatorGenerator):
 #     def generate(self):
 #         self.props["a"] = bpy.props.IntProperty(name="Width A", min=1, default=20)
@@ -1263,6 +1376,6 @@ class Delight_IOP(image_ops.ImageOperatorGenerator):
 
 #         self.payload = _pl
 
-additional = [BTT_InstallLibraries, BTT_AddonPreferences]
+additional_classes = [BTT_InstallLibraries, BTT_AddonPreferences]
 
-register, unregister = image_ops.create(locals(), additional)
+register, unregister = image_ops.create(locals(), additional_classes)

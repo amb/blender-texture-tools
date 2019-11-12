@@ -150,9 +150,6 @@ class ImageOperator(master_ops.MacroOperator):
         ):
             target_image.scale(sourcepixels.shape[1], sourcepixels.shape[0])
 
-        # target_image.pixels = sourcepixels.reshape(
-        #     (sourcepixels.shape[0] * sourcepixels.shape[1] * 4,)
-        # )
         target_image.pixels = sourcepixels.ravel().tolist()
         return {"FINISHED"}
 
