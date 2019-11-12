@@ -174,15 +174,6 @@ def blur(pix, s, intensity):
     return convolution(pix, intensity, cup.ones((1 + s * 2, 1 + s * 2), dtype=float))
 
 
-def sharpen(pix, width, intensity):
-    # return convolution(pix, intensity, cup.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]))
-    A = pix[..., 3]
-    gas = gaussian_repeat(pix, width)
-    pix += (pix - gas) * intensity
-    pix[..., 3] = A
-    return pix
-
-
 def grayscale(ssp):
     r, g, b = ssp[:, :, 0], ssp[:, :, 1], ssp[:, :, 2]
     gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
@@ -275,6 +266,15 @@ def gaussian_repeat_np(pix, s):
         else:
             res += pix2 * gcr[s]
     return res
+
+
+def sharpen(pix, width, intensity):
+    # return convolution(pix, intensity, cup.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]))
+    A = pix[..., 3]
+    gas = gaussian_repeat(pix, width)
+    pix += (pix - gas) * intensity
+    pix[..., 3] = A
+    return pix
 
 
 def hi_pass(pix, s, intensity):
