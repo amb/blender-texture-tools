@@ -26,8 +26,6 @@ bl_info = {
     "blender": (2, 81, 0),
 }
 
-from .bpy_amb import utils
-
 import numpy as np
 
 CUDA_ACTIVE = False
@@ -35,20 +33,15 @@ try:
     import cupy as cup
 
     CUDA_ACTIVE = True
-except Exception as e:
-    print(e)
-    print("Trying to install Cupy Python library...")
-    utils.install_lib("cupy-cuda100")
-    import cupy as cup
-
-    CUDA_ACTIVE = True
+except Exception:
+    CUDA_ACTIVE = False
+    cup = np
 
 import bpy
 from . import image_ops
 import importlib
 
 importlib.reload(image_ops)
-importlib.reload(utils)
 
 
 def gauss_curve(x):
@@ -626,15 +619,16 @@ def curvature_to_height(image, h2, iterations=2000):
     return cup.dstack([u, u, u, image[..., 3]])
 
 
-def normals_to_height(image, grid_steps, iterations=2000):
+def normals_to_height(image, grid_steps, iterations=2000, intensity=1.0):
     # A = image[..., 3]
     ih, iw = image.shape[0], image.shape[1]
     u = cup.ones((ih, iw), dtype=np.float32) * 0.5
 
-    vectors = cup.zeros((ih, iw, 3), dtype=cup.float32)
+    vectors = cup.zeros((ih, iw, 2), dtype=cup.float32)
     vectors[..., 0] = 0.5 - image[..., 0]
     vectors[..., 1] = image[..., 1] - 0.5
-    vectors[..., 2] = image[..., 2]
+
+    vectors *= intensity
 
     t = np.empty_like(u, dtype=np.float32)
 

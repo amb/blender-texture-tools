@@ -21,9 +21,13 @@ import bpy  # noqa:F401
 
 import numpy as np
 
+CUDA_ACTIVE = False
 try:
     import cupy as cup
+
+    CUDA_ACTIVE = True
 except Exception:
+    CUDA_ACTIVE = False
     cup = np
 
 from collections import OrderedDict
@@ -99,6 +103,40 @@ def create(lc):
     )
 
     return pbuild.register_params, pbuild.unregister_params
+
+
+class BTT_InstallLibraries(bpy.types.Operator):
+    bl_idname = "uv.spacker_install_libraries"
+    bl_label = "Install required libraries: pip, cffi,  pyclipper"
+
+    def execute(self, context):
+        from subprocess import call
+
+        pp = bpy.app.binary_path_python
+
+        call([pp, "-m", "ensurepip", "--user"])
+        call([pp, "-m", "pip", "install", "--user", "cupy-cuda100"])
+
+        global CUDA_ACTIVE
+        CUDA_ACTIVE = True
+
+        import cupy
+
+        global cup
+        cup = cupy
+
+        return {"FINISHED"}
+
+
+class BTT_AddonPreferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
+
+    def draw(self, context):
+        row = self.layout.row()
+        if CUDA_ACTIVE is False:
+            row.operator(BTT_InstallLibraries.bl_idname, text="Install CUDA acceleration library")
+        else:
+            row.label(text="All optional libraries installed")
 
 
 class ImageOperator(master_ops.MacroOperator):
