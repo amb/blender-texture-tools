@@ -62,7 +62,7 @@ def get_area_image(context):
         return None
 
 
-def create(lc):
+def create(lc, additional_classes):
     """ create(locals()) """
     load_these = []
     for name, obj in lc.copy().items():
@@ -99,7 +99,15 @@ def create(lc):
             row.prop(context.scene.texture_tools, "global" + "_target")
 
     pbuild = master_ops.PanelBuilder(
-        "texture_tools", load_these, _panel_draw, _props, "OBUILD", "IMAGE_EDITOR", "UI", "Image"
+        "texture_tools",
+        load_these,
+        _panel_draw,
+        _props,
+        "OBUILD",
+        "IMAGE_EDITOR",
+        "UI",
+        "Image",
+        additional_classes,
     )
 
     return pbuild.register_params, pbuild.unregister_params
@@ -176,9 +184,6 @@ class ImageOperator(master_ops.MacroOperator):
         ):
             target_image.scale(sourcepixels.shape[1], sourcepixels.shape[0])
 
-        # target_image.pixels = sourcepixels.reshape(
-        #     (sourcepixels.shape[0] * sourcepixels.shape[1] * 4,)
-        # )
         target_image.pixels = sourcepixels.ravel().tolist()
         return {"FINISHED"}
 

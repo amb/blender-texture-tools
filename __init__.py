@@ -22,7 +22,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 23),
+    "version": (0, 1, 25),
     "blender": (2, 81, 0),
 }
 
@@ -38,10 +38,58 @@ except Exception:
     cup = np
 
 import bpy
+
+# from . import pycl
 from . import image_ops
 import importlib
 
 importlib.reload(image_ops)
+
+
+class BTT_InstallLibraries(bpy.types.Operator):
+    bl_idname = "image.ied_install_libraries"
+    bl_label = "Install CUDA support (cupy-cuda100 library)"
+
+    def execute(self, context):
+        from subprocess import call
+
+        pp = bpy.app.binary_path_python
+
+        call([pp, "-m", "ensurepip", "--user"])
+        call([pp, "-m", "pip", "install", "--user", "cupy-cuda100"])
+
+        global CUDA_ACTIVE
+        CUDA_ACTIVE = True
+
+        import cupy
+
+        global cup
+        cup = cupy
+
+        return {"FINISHED"}
+
+
+class BTT_AddonPreferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
+
+    def draw(self, context):
+
+        if CUDA_ACTIVE is False:
+            info_text = (
+                "The button below should automatically install required CUDA libs.\n"
+                "You need to run the reload scripts command in Blender to activate the\n"
+                " functionality after the installation finishes, or restart Blender."
+            )
+            col = self.layout.box().column(align=True)
+            for l in info_text.split("\n"):
+                row = col.row()
+                row.label(text=l)
+            # col.separator()
+            row = self.layout.row()
+            row.operator(BTT_InstallLibraries.bl_idname, text="Install CUDA acceleration library")
+        else:
+            row = self.layout.row()
+            row.label(text="All optional libraries installed")
 
 
 def gauss_curve(x):
@@ -51,11 +99,27 @@ def gauss_curve(x):
     return res
 
 
-def gauss_curve_np(x):
-    # gaussian with 0.01831 at last
-    res = np.array([np.exp(-((i * (2 / x)) ** 2)) for i in range(-x, x + 1)], dtype=np.float32)
-    res /= np.sum(res)
-    return res
+# def gauss_curve_np(x):
+#     # gaussian with 0.01831 at last
+#     res = np.array([np.exp(-((i * (2 / x)) ** 2)) for i in range(-x, x + 1)], dtype=np.float32)
+#     res /= np.sum(res)
+#     return res
+
+
+def vectors_to_nmap(vectors, nmap):
+    vectors *= 0.5
+    nmap[:, :, 0] = vectors[:, :, 0] + 0.5
+    nmap[:, :, 1] = vectors[:, :, 1] + 0.5
+    nmap[:, :, 2] = vectors[:, :, 2] + 0.5
+
+
+def nmap_to_vectors(nmap):
+    vectors = cup.empty((nmap.shape[0], nmap.shape[1], 3), dtype=cup.float32)
+    vectors[..., 0] = nmap[..., 0] - 0.5
+    vectors[..., 1] = nmap[..., 1] - 0.5
+    vectors[..., 2] = nmap[..., 2] - 0.5
+    vectors *= 2.0
+    return vectors
 
 
 def neighbour_average(ig):
@@ -124,14 +188,6 @@ def convolution(ssp, intens, sfil):
     return tpx
 
 
-def blur(pix, s, intensity):
-    return convolution(pix, intensity, cup.ones((1 + s * 2, 1 + s * 2), dtype=float))
-
-
-def sharpen(pix, intensity):
-    return convolution(pix, intensity, cup.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]))
-
-
 def grayscale(ssp):
     r, g, b = ssp[:, :, 0], ssp[:, :, 1], ssp[:, :, 2]
     gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
@@ -170,45 +226,9 @@ def sobel(pix, intensity):
     return retarr
 
 
-def edgedetect(pix, s, intensity):
-    k = cup.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
-    return convolution(pix, intensity, k) * 0.5 + 0.5
-
-
-def gaussian(pix, s, intensity):
-    s = int(s)
-    sa = pix[..., 3]
-    # sval = 1 + s * 2
-    # krn = cup.ones(sval) / sval
-    krn = gauss_curve(s)
-    f_krn = lambda m: cup.convolve(m, krn, mode="same")
-    pix = cup.apply_along_axis(f_krn, axis=1, arr=pix)
-    pix = cup.apply_along_axis(f_krn, axis=0, arr=pix)
-    pix[..., 3] = sa
-    return pix
-
-
 def gaussian_repeat(pix, s):
     res = cup.zeros(pix.shape, dtype=cup.float32)
     gcr = gauss_curve(s)
-    for i in range(-s, s + 1):
-        if i != 0:
-            res += cup.roll(pix, i, axis=0) * gcr[i + s]
-        else:
-            res += pix * gcr[s]
-    pix2 = res.copy()
-    res *= 0.0
-    for i in range(-s, s + 1):
-        if i != 0:
-            res += cup.roll(pix2, i, axis=1) * gcr[i + s]
-        else:
-            res += pix2 * gcr[s]
-    return res
-
-
-def gaussian_repeat_np(pix, s):
-    res = np.zeros(pix.shape, dtype=np.float32)
-    gcr = gauss_curve_np(s)
     for i in range(-s, s + 1):
         if i != 0:
             res[:-i, ...] += pix[i:, ...] * gcr[i + s]
@@ -224,6 +244,15 @@ def gaussian_repeat_np(pix, s):
         else:
             res += pix2 * gcr[s]
     return res
+
+
+def sharpen(pix, width, intensity):
+    # return convolution(pix, intensity, cup.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]))
+    A = pix[..., 3]
+    gas = gaussian_repeat(pix, width)
+    pix += (pix - gas) * intensity
+    pix[..., 3] = A
+    return pix
 
 
 def hi_pass(pix, s, intensity):
@@ -252,7 +281,6 @@ def gaussian_repeat_fit(pix, s):
     return gaussian_repeat(pix, s)
 
 
-# https://stackoverflow.com/questions/32655686/histogram-matching-of-two-images-in-python-2-x
 def hist_match(source, template):
     """
     Adjust the pixel values of a grayscale image such that its histogram
@@ -352,14 +380,6 @@ def cumulative_distribution(data, bins):
     res = cup.zeros((bins,))
     res[cup.int64(hg_av)] = hg_a
     return cup.cumsum(res)
-
-
-def ecdf(x):
-    """ empirical CDF """
-    vals, counts = cup.unique(x, return_counts=True)
-    ecdf = cup.cumsum(counts).astype(cup.float64)
-    ecdf /= ecdf[-1]
-    return vals, ecdf
 
 
 def hi_pass_balance(pix, s, zoom):
@@ -497,26 +517,25 @@ def median_filter_blobs(pix, s, picked="center"):
     return pix
 
 
-def normals_simple(pix, s, intensity, source):
-    if s > 0:
-        pix = gaussian_repeat(pix, s)
+def normals_simple(pix, source):
     pix = grayscale(pix)
-    if source == "SOBEL":
-        pix = sobel(pix, 1.0)
-
     pix = normalize(pix)
     sshape = pix.shape
 
     # extract x and y deltas
     px = sobel_x(pix, 1.0)
-    px[:, :, 2] = px[:, :, 2] * intensity
+    px[:, :, 2] = px[:, :, 2]
     px[:, :, 1] = 0
     px[:, :, 0] = 1
 
     py = sobel_y(pix, 1.0)
-    py[:, :, 2] = py[:, :, 2] * intensity
+    py[:, :, 2] = py[:, :, 2]
     py[:, :, 1] = 1
     py[:, :, 0] = 0
+
+    # normalize
+    # dv = max(abs(cup.min(curve)), abs(cup.max(curve)))
+    # curve /= dv
 
     # find the imagined approximate surface normal
     # arr = cup.cross(px[:, :, :3], py[:, :, :3])
@@ -528,30 +547,28 @@ def normals_simple(pix, s, intensity, source):
     arr[..., 0] *= m
     arr[..., 1] *= m
     arr[..., 2] *= m
-    vectors = arr * 0.5
+    arr[..., 0] = -arr[..., 0]
 
     # normals format
     retarr = cup.zeros(sshape)
-    retarr[:, :, 0] = 0.5 + vectors[:, :, 0]
-    retarr[:, :, 1] = 0.5 + vectors[:, :, 1]
-    retarr[:, :, 2] = vectors[:, :, 2] * 2.0
+    vectors_to_nmap(arr, retarr)
     retarr[:, :, 3] = pix[..., 3]
     return retarr
 
 
-def normals_to_curvature(pix, intensity):
+def normals_to_curvature(pix):
+    intensity = 1.0
     curve = cup.zeros((pix.shape[0], pix.shape[1]), dtype=cup.float32)
-    vectors = cup.zeros((pix.shape[0], pix.shape[1], 3), dtype=cup.float32)
+    vectors = nmap_to_vectors(pix)
 
-    vectors[..., 0] = 0.5 - pix[..., 0]
-    vectors[..., 1] = pix[..., 1] - 0.5
-    vectors[..., 2] = pix[..., 2]
+    # y_vec = cup.array([1, 0, 0], dtype=cup.float32)
+    # x_vec = cup.array([0, 1, 0], dtype=cup.float32)
 
-    y_vec = cup.array([1, 0, 0], dtype=cup.float32)
-    x_vec = cup.array([0, 1, 0], dtype=cup.float32)
+    # yd = vectors.dot(x_vec)
+    # xd = vectors.dot(y_vec)
 
-    yd = vectors.dot(x_vec)
-    xd = vectors.dot(y_vec)
+    xd = vectors[:, :, 0]
+    yd = vectors[:, :, 1]
 
     # curve[0,0] = yd[1,0]
     curve[:-1, :] += yd[1:, :]
@@ -624,9 +641,9 @@ def normals_to_height(image, grid_steps, iterations=2000, intensity=1.0):
     ih, iw = image.shape[0], image.shape[1]
     u = cup.ones((ih, iw), dtype=np.float32) * 0.5
 
-    vectors = cup.zeros((ih, iw, 2), dtype=cup.float32)
-    vectors[..., 0] = 0.5 - image[..., 0]
-    vectors[..., 1] = image[..., 1] - 0.5
+    vectors = nmap_to_vectors(image)
+    # vectors[..., 0] = 0.5 - image[..., 0]
+    # vectors[..., 1] = image[..., 1] - 0.5
 
     vectors *= intensity
 
@@ -787,12 +804,103 @@ def gimpify(image):
     return amask * image + (1.0 - amask) * pixels
 
 
+def inpaint_tangents(pixels, threshold):
+    # invalid = pixels[:, :, 2] < 0.5 + (self.tolerance * 0.5)
+    invalid = pixels[:, :, 2] < threshold
+    # n2 = (
+    #     ((pixels[:, :, 0] - 0.5) * 2) ** 2
+    #     + ((pixels[:, :, 1] - 0.5) * 2) ** 2
+    #     + ((pixels[:, :, 2] - 0.5) * 2) ** 2
+    # )
+    # invalid |= (n2 < 0.9) | (n2 > 1.1)
+
+    # grow selection
+    for _ in range(2):
+        invalid[0, :] = False
+        invalid[-1, :] = False
+        invalid[:, 0] = False
+        invalid[:, -1] = False
+
+        invalid = (
+            np.roll(invalid, 1, axis=0)
+            | np.roll(invalid, -1, axis=0)
+            | np.roll(invalid, 1, axis=1)
+            | np.roll(invalid, -1, axis=1)
+        )
+
+    pixels[invalid] = np.array([0.5, 0.5, 1.0, 1.0])
+
+    invalid[0, :] = False
+    invalid[-1, :] = False
+    invalid[:, 0] = False
+    invalid[:, -1] = False
+
+    # fill
+    front = np.copy(invalid)
+    locs = [(0, -1, 1), (0, 1, -1), (1, -1, 1), (1, 1, -1)]
+    for i in range(4):
+        print("fill step:", i)
+        for l in locs:
+            r = np.roll(front, l[1], axis=l[0])
+            a = (r != front) & front
+            pixels[a] = pixels[np.roll(a, l[2], axis=l[0])]
+            front[a] = False
+
+    cl = np.roll(invalid, -1, axis=0)
+    cr = np.roll(invalid, 1, axis=0)
+    uc = np.roll(invalid, -1, axis=1)
+    bc = np.roll(invalid, 1, axis=1)
+
+    # smooth
+    for i in range(4):
+        print("smooth step:", i)
+        pixels[invalid] = (pixels[invalid] + pixels[cl] + pixels[cr] + pixels[uc] + pixels[bc]) / 5
+
+    return pixels
+
+
+def normalize_tangents(image):
+    ih, iw = image.shape[0], image.shape[1]
+    vectors = cup.zeros((ih, iw, 3), dtype=cup.float32)
+    vectors[..., 0] = image[..., 0] - 0.5
+    vectors[..., 1] = image[..., 1] - 0.5
+    vectors[..., 2] = image[..., 2] - 0.5
+
+    vectors = (vectors.T / np.linalg.norm(vectors, axis=2)).T * 0.5
+
+    retarr = cup.empty_like(image)
+    retarr[:, :, 0] = 0.5 + vectors[:, :, 0]
+    retarr[:, :, 1] = 0.5 + vectors[:, :, 1]
+    retarr[:, :, 2] = 0.5 + vectors[:, :, 2]
+    retarr[:, :, 3] = image[..., 3]
+
+    return retarr
+
+
+def image_to_material(image):
+    return image
+
+
 class Grayscale_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "grayscale"
         self.info = "Grayscale from RGB"
         self.category = "Basic"
         self.payload = lambda self, image, context: grayscale(image)
+
+
+class Random_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "random"
+        self.info = "Random RGB pixels"
+        self.category = "Basic"
+
+        def _pl(self, image, context):
+            t = np.random.random(image.shape)
+            t[..., 3] = 1.0
+            return t
+
+        self.payload = _pl
 
 
 class Swizzle_IOP(image_ops.ImageOperatorGenerator):
@@ -961,11 +1069,12 @@ class CropToSquare_IOP(image_ops.ImageOperatorGenerator):
 
 class Sharpen_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=2, default=5)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=0.6)
         self.prefix = "sharpen"
         self.info = "Simple sharpen"
         self.category = "Filter"
-        self.payload = lambda self, image, context: sharpen(image, self.intensity)
+        self.payload = lambda self, image, context: sharpen(image, self.width, self.intensity)
 
 
 class Sobel_IOP(image_ops.ImageOperatorGenerator):
@@ -1137,27 +1246,29 @@ class HistogramSeamless_IOP(image_ops.ImageOperatorGenerator):
 
 class Normals_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["source"] = bpy.props.EnumProperty(
-            name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
-        )
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        # self.props["source"] = bpy.props.EnumProperty(
+        #     name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
+        # )
+        # self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
+        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "height_to_normals"
         self.info = "(Very rough estimate) normal map from RGB"
         self.category = "Normals"
         self.payload = lambda self, image, context: normals_simple(
-            image, self.width, self.intensity, self.source
+            # image, self.width, self.intensity, "Luminance"
+            image,
+            "Luminance",
         )
 
 
 class NormalsToCurvature_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         # self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "normals_to_curvature"
         self.info = "Curvature map from tangent normal map"
         self.category = "Normals"
-        self.payload = lambda self, image, context: normals_to_curvature(image, self.intensity)
+        self.payload = lambda self, image, context: normals_to_curvature(image)
 
 
 class CurveToHeight_IOP(image_ops.ImageOperatorGenerator):
@@ -1196,6 +1307,35 @@ class Delight_IOP(image_ops.ImageOperatorGenerator):
         )
 
 
+class InpaintTangents_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        # self.props["flip"] = bpy.props.BoolProperty(name="Flip direction", default=False)
+        # self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
+        self.props["threshold"] = bpy.props.FloatProperty(
+            name="Threshold", min=0.1, max=0.9, default=0.5
+        )
+        self.prefix = "inpaint_invalid"
+        self.info = "Inpaint invalid tangents"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: inpaint_tangents(image, self.threshold)
+
+
+class NormalizeTangents_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "normalize_tangents"
+        self.info = "Make all tangents length 1"
+        self.category = "Normals"
+        self.payload = lambda self, image, context: normalize_tangents(image)
+
+
+class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "image_to_material"
+        self.info = "Create magic material from image"
+        self.category = "Magic"
+        self.payload = lambda self, image, context: image_to_material(image)
+
+
 # class DoG_IOP(image_ops.ImageOperatorGenerator):
 #     def generate(self):
 #         self.props["a"] = bpy.props.IntProperty(name="Width A", min=1, default=20)
@@ -1217,5 +1357,6 @@ class Delight_IOP(image_ops.ImageOperatorGenerator):
 
 #         self.payload = _pl
 
+additional_classes = [BTT_InstallLibraries, BTT_AddonPreferences]
 
-register, unregister = image_ops.create(locals())
+register, unregister = image_ops.create(locals(), additional_classes)
