@@ -99,11 +99,11 @@ def gauss_curve(x):
     return res
 
 
-# def gauss_curve_np(x):
-#     # gaussian with 0.01831 at last
-#     res = np.array([np.exp(-((i * (2 / x)) ** 2)) for i in range(-x, x + 1)], dtype=np.float32)
-#     res /= np.sum(res)
-#     return res
+def gauss_curve_np(x):
+    # gaussian with 0.01831 at last
+    res = np.array([np.exp(-((i * (2 / x)) ** 2)) for i in range(-x, x + 1)], dtype=np.float32)
+    res /= np.sum(res)
+    return res
 
 
 def vectors_to_nmap(vectors, nmap):
