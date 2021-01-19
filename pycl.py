@@ -2255,6 +2255,89 @@ def clEnqueueWriteBuffer(queue, mem, pointer, size=None, blocking=True, offset=0
 
 @_wrapdll(
     cl_command_queue,
+    cl_image,
+    cl_bool,
+    P(size_t),
+    P(size_t),
+    size_t,
+    size_t,
+    void_p,
+    cl_uint,
+    P(cl_event),
+    P(cl_event),
+)
+def clEnqueueReadImage(
+    queue, mem, pointer, origin, region, row_pitch, slice_pitch, blocking=True, wait_for=None
+):
+    """
+    clEnqueueReadBuffer, just with images
+    see: https://www.khronos.org/registry/OpenCL/sdk/1.0/docs/man/xhtml/clEnqueueReadImage.html
+    """
+    nevents, wait_array = _make_event_array(wait_for)
+    out_event = cl_event()
+
+    ct_origin = (ctypes.c_ulonglong * len(origin))(*origin)
+    ct_region = (ctypes.c_ulonglong * len(region))(*region)
+
+    clEnqueueReadImage.call(
+        queue,
+        mem,
+        blocking,
+        ct_origin,
+        ct_region,
+        row_pitch,
+        slice_pitch,
+        pointer,
+        nevents,
+        wait_array,
+        byref(out_event),
+    )
+    return out_event
+
+
+@_wrapdll(
+    cl_command_queue,
+    cl_image,
+    cl_bool,
+    P(size_t),
+    P(size_t),
+    size_t,
+    size_t,
+    void_p,
+    cl_uint,
+    P(cl_event),
+    P(cl_event),
+)
+def clEnqueueWriteImage(
+    queue, mem, pointer, origin, region, row_pitch, slice_pitch, blocking=True, wait_for=None
+):
+    """
+    see: clEnqueueWriteBuffer, clEnqueueReadImage
+    """
+    nevents, wait_array = _make_event_array(wait_for)
+    out_event = cl_event()
+
+    ct_origin = (ctypes.c_ulonglong * len(origin))(*origin)
+    ct_region = (ctypes.c_ulonglong * len(region))(*region)
+
+    clEnqueueWriteImage.call(
+        queue,
+        mem,
+        blocking,
+        ct_origin,
+        ct_region,
+        row_pitch,
+        slice_pitch,
+        pointer,
+        nevents,
+        wait_array,
+        byref(out_event),
+    )
+    return out_event
+
+
+@_wrapdll(
+    cl_command_queue,
     cl_buffer,
     cl_buffer,
     size_t,

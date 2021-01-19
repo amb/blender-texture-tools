@@ -26,11 +26,12 @@ bl_info = {
     "blender": (2, 81, 0),
 }
 
-import numpy as np
-from . import pycl as cl
 import bpy
 
-# from . import pycl
+import numpy as np
+from . import pycl as cl
+from ctypes import c_void_p as void_p
+
 from . import image_ops
 import importlib
 
@@ -40,6 +41,42 @@ importlib.reload(image_ops)
 def min_ptwo(val, pt):
     "Gives the minimum divisionally aligned value for input value"
     return ((val - 1) // pt + 1) * pt
+
+
+def image2d_to_ndarray(queue, buf, out=None, like=None, dtype="uint8", shape=None, **kw):
+    "See pycl.py for buffer_to_ndarray"
+    if out is None:
+        if like is not None:
+            if not np:
+                raise Exception("numpy not available")
+
+            out = np.empty_like(like)
+        else:
+            if not np:
+                raise Exception("numpy not available")
+
+            dtype = np.dtype(dtype)
+            if shape is None:
+                shape = buf.size // dtype.itemsize
+            out = np.empty(shape, dtype)
+    assert out.flags.contiguous, "Don't know how to write non-contiguous yet."
+    ptr = void_p(out.__array_interface__["data"][0])
+    evt = cl.clEnqueueReadImage(
+        queue, buf, ptr, (0, 0, 0), (out.shape[0], out.shape[1], 1), 0, 0, **kw
+    )
+    return (out, evt)
+
+
+def image2d_from_ndarray(queue, ary, buf=None, **kw):
+    ary = np.ascontiguousarray(ary)
+    if ary.__array_interface__["strides"]:
+        raise ValueError("I don't know how to handle strided arrays yet.")
+    ptr = void_p(ary.__array_interface__["data"][0])
+    assert buf is not None
+    evt = cl.clEnqueueWriteImage(
+        queue, buf, ptr, (0, 0, 0), (ary.shape[0], ary.shape[1], 1), 0, 0, **kw
+    )
+    return (buf, evt)
 
 
 class CLDev:
@@ -82,10 +119,11 @@ class CLDev:
         self.kernels[name] = kernel
         return kernel
 
-    def run(self, kernel, params, inputs, shape):
+    def run_np(self, kernel, params, inputs):
         "Run CL kernel on params. Multiple in, single out. Returns Numpy.float32 array."
         # mf = cl.cl_mem_flags
         # print(a_np.shape, np.max(a_np), np.min(a_np))
+        assert len(inputs) > 0
         cl_inputs = []
         for ip in inputs:
             # Only f32 and matching dimensions
@@ -96,11 +134,40 @@ class CLDev:
             cl_inputs.append(a_g)
 
         res_g = cl.clCreateBuffer(self.ctx, inputs[0].nbytes)
-        f_shape = (min_ptwo(shape[0], 8), min_ptwo(shape[1], 8))
+        f_shape = (min_ptwo(inputs[0].shape[0], 8), min_ptwo(inputs[0].shape[1], 8))
         run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=f_shape, lsize=(8, 8))
         res_v, evt = cl.buffer_to_ndarray(self.queue, res_g, wait_for=run_evt, like=inputs[0])
         evt.wait()
 
+        return res_v
+
+    def run(self, kernel, params, inputs):
+        "Run CL kernel on params. Multiple in, single out. Returns Numpy.float32 array."
+        assert len(inputs) > 0
+
+        mf = cl.cl_mem_flags
+        imgf = cl.cl_image_format(cl.cl_channel_order.CL_RGBA, cl.cl_channel_type.CL_FLOAT)
+        # print(a_np.shape, np.max(a_np), np.min(a_np))
+        cl_inputs = []
+        w, h = inputs[0].shape[0], inputs[0].shape[1]
+        for ip in inputs:
+            # Only f32 and matching dimensions
+            assert ip.dtype == np.float32
+            assert ip.shape == inputs[0].shape
+
+            img_b = cl.clCreateImage2D(self.ctx, w, h, imgformat=imgf, flags=mf.CL_MEM_READ_ONLY)
+            a_g, a_evt = image2d_from_ndarray(self.queue, ip, buf=img_b)
+            a_evt.wait()
+            cl_inputs.append(a_g)
+
+        f_shape = (min_ptwo(inputs[0].shape[0], 8), min_ptwo(inputs[0].shape[1], 8))
+        res_g = cl.clCreateImage2D(self.ctx, w, h, imgformat=imgf, flags=mf.CL_MEM_WRITE_ONLY)
+        run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=f_shape, lsize=(8, 8))
+        res_v, evt = image2d_to_ndarray(self.queue, res_g, wait_for=run_evt, like=inputs[0])
+        evt.wait()
+        print(np.max(res_v), np.min(res_v))
+
+        # return np.ones(inputs[0].shape, dtype=np.float32)
         return res_v
 
 
@@ -139,6 +206,66 @@ class BTT_AddonPreferences(bpy.types.AddonPreferences):
         # else:
         row = self.layout.row()
         row.label(text="All optional libraries installed")
+
+
+def grayscale_np(ssp):
+    src = """
+    __kernel void grayscale(
+        const int WIDTH,
+        __global const float4 *A,
+        __global const float4 *B,
+        __global float4 *output)
+    {
+        int i = get_global_id(0);
+        int j = get_global_id(1);
+        int loc = i + j*WIDTH;
+
+        float g = A[loc].x * 0.2989 + A[loc].y * 0.5870 + A[loc].z * 0.1140;
+
+        output[loc].x = g;
+        output[loc].y = g;
+        output[loc].z = g;
+        output[loc].w = A[loc].w;
+    }
+    """
+
+    k = cl_builder.build("grayscale", src, (cl.cl_int, cl.cl_mem, cl.cl_mem, cl.cl_mem))
+    res = cl_builder.run(k, (ssp.shape[0],), (ssp, ssp))
+    # print(type(res), res.dtype, res.shape, np.max(res), np.min(res))
+    # res = np.ones(ssp.shape, dtype=np.float32)
+    return res
+
+
+def grayscale(ssp):
+    src = """
+    __kernel void grayscale(
+        __read_only image2d_t A,
+        __read_only image2d_t B,
+        __write_only image2d_t output)
+    {
+        const int2 loc = (int2)(get_global_id(0), get_global_id(1));
+        const sampler_t sampler = \
+            CLK_NORMALIZED_COORDS_FALSE |
+            CLK_ADDRESS_REPEAT |
+            CLK_FILTER_NEAREST;
+
+        float4 px = read_imagef(A, sampler, loc);
+
+        float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
+        float4 rpx = px;
+        rpx.x = g;
+        rpx.y = g;
+        rpx.z = g;
+        rpx.w = 1.0;
+
+        //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
+        write_imagef(output, loc, rpx);
+    }
+    """
+
+    k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image, cl.cl_image))
+    res = cl_builder.run(k, [], (ssp, ssp))
+    return res
 
 
 def gauss_curve(x):
@@ -228,35 +355,6 @@ def convolution(ssp, intens, sfil):
         for x in range(xsz):
             tpx += np.roll(ssp, (x - xsz // 2) * 4 + (y - ysz // 2) * ystep) * sfil[y, x]
     return tpx
-
-
-def grayscale(ssp):
-    src = """
-    __kernel void grayscale(
-        const int WIDTH,
-        __global const float *A,
-        __global const float *B,
-        __global float *output)
-    {
-        int i = get_global_id(0);
-        int j = get_global_id(1);
-
-        int loc = (i+j*WIDTH)*4;
-
-        float g = A[loc] * 0.2989 + A[loc+1] * 0.5870 + A[loc+2] * 0.1140;
-
-        output[loc] = g;
-        output[loc+1] = g;
-        output[loc+2] = g;
-        output[loc+3] = A[loc+3];
-    }
-    """
-
-    k = cl_builder.build("grayscale", src, (cl.cl_int, cl.cl_mem, cl.cl_mem, cl.cl_mem))
-    res = cl_builder.run(k, (ssp.shape[0],), (ssp, ssp), (ssp.shape[0], ssp.shape[1]))
-    # print(type(res), res.dtype, res.shape, np.max(res), np.min(res))
-    # res = np.ones(ssp.shape, dtype=np.float32)
-    return res
 
 
 def normalize(pix, save_alpha=False):
@@ -1358,16 +1456,16 @@ class NormalsToHeight_IOP(image_ops.ImageOperatorGenerator):
         )
 
 
-class Delight_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.props["flip"] = bpy.props.BoolProperty(name="Flip direction", default=False)
-        self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
-        self.prefix = "delighting"
-        self.info = "Delight simple"
-        self.category = "Normals"
-        self.payload = lambda self, image, context: delight_simple(
-            image, -1 if self.flip else 1, iterations=self.iterations
-        )
+# class Delight_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         self.props["flip"] = bpy.props.BoolProperty(name="Flip direction", default=False)
+#         self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
+#         self.prefix = "delighting"
+#         self.info = "Delight simple"
+#         self.category = "Normals"
+#         self.payload = lambda self, image, context: delight_simple(
+#             image, -1 if self.flip else 1, iterations=self.iterations
+#         )
 
 
 class InpaintTangents_IOP(image_ops.ImageOperatorGenerator):
@@ -1391,12 +1489,12 @@ class NormalizeTangents_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: normalize_tangents(image)
 
 
-class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        self.prefix = "image_to_material"
-        self.info = "Create magic material from image"
-        self.category = "Magic"
-        self.payload = lambda self, image, context: image_to_material(image)
+# class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         self.prefix = "image_to_material"
+#         self.info = "Create magic material from image"
+#         self.category = "Magic"
+#         self.payload = lambda self, image, context: image_to_material(image)
 
 
 # class DoG_IOP(image_ops.ImageOperatorGenerator):
