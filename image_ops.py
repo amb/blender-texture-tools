@@ -22,13 +22,13 @@ import bpy  # noqa:F401
 import numpy as np
 
 CUDA_ACTIVE = False
-try:
-    import cupy as cup
+# try:
+#     import cupy as cup
 
-    CUDA_ACTIVE = True
-except Exception:
-    CUDA_ACTIVE = False
-    cup = np
+#     CUDA_ACTIVE = True
+# except Exception:
+#     CUDA_ACTIVE = False
+#     cup = np
 
 from collections import OrderedDict
 
@@ -69,6 +69,7 @@ def create(lc, additional_classes):
         if hasattr(obj, "__bases__") and obj.__bases__[0].__name__ == "ImageOperatorGenerator":
             load_these.append(obj)
 
+    # Define common properties and drawing functionality for the image operators panel
     _props = OrderedDict()
     _props["source_enum"] = bpy.props.EnumProperty(
         name="FromEnum", items=[("active", "Active", "", 1), ("defined", "Specified", "", 2)]
@@ -98,6 +99,7 @@ def create(lc, additional_classes):
             row = box.row()
             row.prop(context.scene.texture_tools, "global" + "_target")
 
+    # Build the rest of the panel
     pbuild = master_ops.PanelBuilder(
         "texture_tools",
         load_these,
@@ -115,7 +117,7 @@ def create(lc, additional_classes):
 
 class BTT_InstallLibraries(bpy.types.Operator):
     bl_idname = "uv.spacker_install_libraries"
-    bl_label = "Install required libraries: pip, cffi,  pyclipper"
+    bl_label = "Install required libraries: pip, cupy-cuda100"
 
     def execute(self, context):
         from subprocess import call
@@ -166,25 +168,33 @@ class ImageOperator(master_ops.MacroOperator):
         else:
             target_image = image
 
-        if self.force_numpy:
-            sourcepixels = np.array(source_image.pixels[:], dtype=np.float32).reshape(
-                source_image.size[1], source_image.size[0], 4
-            )
+        if self.force_numpy or CUDA_ACTIVE is False:
+            input_pixels = np.empty(len(image.pixels), dtype=np.float32)
+            # sourcepixels = np.array(input_pixels, dtype=np.float32).reshape(
+            #     source_image.size[1], source_image.size[0], 4
+            # )
         else:
-            sourcepixels = cup.array(source_image.pixels[:], dtype=cup.float32).reshape(
-                source_image.size[1], source_image.size[0], 4
-            )
+            input_pixels = cup.empty(len(image.pixels), dtype=cup.float32)
+            # sourcepixels = cup.array(input_pixels, dtype=cup.float32).reshape(
+            #     source_image.size[1], source_image.size[0], 4
+            # )
 
-        with utils.Profile_this(lines=10):
-            sourcepixels = self.payload(sourcepixels, context)
+        image.pixels.foreach_get(input_pixels)
+        print(input_pixels.dtype, type(input_pixels))
+        input_pixels = input_pixels.reshape(source_image.size[1], source_image.size[0], 4)
+
+        # with utils.Profile_this(lines=10):
+        result = self.payload(input_pixels, context)
 
         if (
-            target_image.size[1] != sourcepixels.shape[0]
-            or target_image.size[0] != sourcepixels.shape[1]
+            target_image.size[1] != source_image.size[1]
+            or target_image.size[0] != source_image.size[0]
         ):
-            target_image.scale(sourcepixels.shape[1], sourcepixels.shape[0])
+            target_image.scale(source_image.size[0], source_image.size[1])
 
-        target_image.pixels = sourcepixels.ravel().tolist()
+        # target_image.pixels = sourcepixels.ravel().tolist()
+        print(result.dtype, type(result))
+        target_image.pixels.foreach_set(np.float32(result.ravel()))
         return {"FINISHED"}
 
 
