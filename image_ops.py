@@ -180,7 +180,7 @@ class ImageOperator(master_ops.MacroOperator):
             # )
 
         image.pixels.foreach_get(input_pixels)
-        print(input_pixels.dtype, type(input_pixels))
+        # print(input_pixels.dtype, type(input_pixels))
         input_pixels = input_pixels.reshape(source_image.size[1], source_image.size[0], 4)
 
         # with utils.Profile_this(lines=10):
@@ -193,7 +193,8 @@ class ImageOperator(master_ops.MacroOperator):
             target_image.scale(source_image.size[0], source_image.size[1])
 
         # target_image.pixels = sourcepixels.ravel().tolist()
-        print(result.dtype, type(result))
+        # print(result.dtype, type(result))
+        print(np.max(result), np.min(result))
         target_image.pixels.foreach_set(np.float32(result.ravel()))
         return {"FINISHED"}
 

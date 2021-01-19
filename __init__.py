@@ -27,7 +27,7 @@ bl_info = {
 }
 
 import numpy as np
-
+from . import pycl as cl
 import bpy
 
 # from . import pycl
@@ -37,27 +37,76 @@ import importlib
 importlib.reload(image_ops)
 
 
-class BTT_InstallLibraries(bpy.types.Operator):
-    bl_idname = "image.ied_install_libraries"
-    bl_label = "Install CUDA support (cupy-cuda100 library)"
+class CLDev:
+    "OpenCL device class specifically for image processing"
 
-    def execute(self, context):
-        from subprocess import call
+    def __init__(self):
+        self.ctx = cl.clCreateContext()
+        for dev in self.ctx.devices:
+            print(dev.name)
 
-        pp = bpy.app.binary_path_python
+        d = cl.clGetDeviceIDs()[0]
+        cl.clGetDeviceInfo(d, cl.cl_device_info.CL_DEVICE_NAME)
+        cl.clGetDeviceInfo(d, cl.cl_device_info.CL_DEVICE_TYPE)
+        print("Device 0 available:", d.available)
+        print("Max work item sizes:", d.max_work_item_sizes)
 
-        call([pp, "-m", "ensurepip", "--user"])
-        call([pp, "-m", "pip", "install", "--user", "cupy-cuda100"])
+        self.queue = cl.clCreateCommandQueue(self.ctx)
+        self.kernels = {}
 
-        global CUDA_ACTIVE
-        CUDA_ACTIVE = True
+    def build(self, name, source, argtypes=None):
+        if name in self.kernels:
+            print("Returned cached OpenCL instead of building:", name)
+            return self.kernels[name]
 
-        import cupy
+        print("Building OpenCL kernel:", name)
+        try:
+            b = cl.clCreateProgramWithSource(self.ctx, source).build()
+            kernel = b[name]
+        except KeyError as e:
+            print(e)
+            print(cl.clGetProgramBuildInfo(b, cl.cl_program_build_info.CL_PROGRAM_BUILD_STATUS, 0))
+            print(cl.clGetProgramBuildInfo(b, cl.cl_program_build_info.CL_PROGRAM_BUILD_OPTIONS, 0))
+            print(cl.clGetProgramBuildInfo(b, cl.cl_program_build_info.CL_PROGRAM_BUILD_LOG, 0))
+            raise
 
-        global cup
-        cup = cupy
+        # kernel.argtypes = (cl.cl_int, cl.cl_int, cl.cl_int, cl.cl_mem, cl.cl_mem, cl.cl_mem)
+        kernel.argtypes = argtypes
+        self.kernels[name] = kernel
+        return kernel
 
-        return {"FINISHED"}
+    def run(self, kernel, params, inputs, shape):
+        # mf = cl.cl_mem_flags
+        # print(a_np.shape, np.max(a_np), np.min(a_np))
+        cl_inputs = []
+        for ip in inputs:
+            assert ip.dtype == np.float32
+            assert ip.shape == inputs[0].shape
+            a_g, a_evt = cl.buffer_from_ndarray(self.queue, ip, blocking=False)
+            a_evt.wait()
+            cl_inputs.append(a_g)
+
+        # run_evt = kernel(*params, a_g, b_g, res_g).on(self.queue, gsize=igs, lsize=ils)
+        res_g = cl.clCreateBuffer(self.ctx, inputs[0].nbytes)
+        run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=shape, lsize=(8, 8))
+        res_v, evt = cl.buffer_to_ndarray(self.queue, res_g, wait_for=run_evt, like=inputs[0])
+        evt.wait()
+
+        return res_v
+
+
+cl_builder = CLDev()
+
+
+# class BTT_InstallLibraries(bpy.types.Operator):
+#     bl_idname = "image.ied_install_libraries"
+#     bl_label = "Install CUDA support (cupy-cuda100 library)"
+#     def execute(self, context):
+#         from subprocess import call
+#         pp = bpy.app.binary_path_python
+#         call([pp, "-m", "ensurepip", "--user"])
+#         call([pp, "-m", "pip", "install", "--user", "cupy-cuda100"])
+#         return {"FINISHED"}
 
 
 class BTT_AddonPreferences(bpy.types.AddonPreferences):
@@ -65,22 +114,22 @@ class BTT_AddonPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context):
 
-        if CUDA_ACTIVE is False:
-            info_text = (
-                "The button below should automatically install required CUDA libs.\n"
-                "You need to run the reload scripts command in Blender to activate the\n"
-                " functionality after the installation finishes, or restart Blender."
-            )
-            col = self.layout.box().column(align=True)
-            for l in info_text.split("\n"):
-                row = col.row()
-                row.label(text=l)
-            # col.separator()
-            row = self.layout.row()
-            row.operator(BTT_InstallLibraries.bl_idname, text="Install CUDA acceleration library")
-        else:
-            row = self.layout.row()
-            row.label(text="All optional libraries installed")
+        # if CUDA_ACTIVE is False:
+        #     info_text = (
+        #         "The button below should automatically install required CUDA libs.\n"
+        #         "You need to run the reload scripts command in Blender to activate the\n"
+        #         " functionality after the installation finishes, or restart Blender."
+        #     )
+        #     col = self.layout.box().column(align=True)
+        #     for l in info_text.split("\n"):
+        #         row = col.row()
+        #         row.label(text=l)
+        #     # col.separator()
+        #     row = self.layout.row()
+        #     row.operator(BTT_InstallLibraries.bl_idname, text="Install CUDA acceleration library")
+        # else:
+        row = self.layout.row()
+        row.label(text="All optional libraries installed")
 
 
 def gauss_curve(x):
@@ -173,12 +222,32 @@ def convolution(ssp, intens, sfil):
 
 
 def grayscale(ssp):
-    r, g, b = ssp[:, :, 0], ssp[:, :, 1], ssp[:, :, 2]
-    gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
-    ssp[..., 0] = gray
-    ssp[..., 1] = gray
-    ssp[..., 2] = gray
-    return ssp
+    src = """
+    __kernel void grayscale(
+        const int WIDTH,
+        __global const float *A,
+        __global const float *B,
+        __global float *output)
+    {
+        int i = get_global_id(0);
+        int j = get_global_id(1);
+
+        int loc = (i+j*WIDTH)*4;
+
+        float g = A[loc] * 0.2989 + A[loc+1] * 0.5870 + A[loc+2] * 0.1140;
+        
+        output[loc] = g;
+        output[loc+1] = g;
+        output[loc+2] = g;
+        output[loc+3] = A[loc+3];
+    }
+    """
+
+    k = cl_builder.build("grayscale", src, (cl.cl_int, cl.cl_mem, cl.cl_mem, cl.cl_mem))
+    res = cl_builder.run(k, (ssp.shape[0],), (ssp, ssp), (ssp.shape[0], ssp.shape[1]))
+    # print(type(res), res.dtype, res.shape, np.max(res), np.min(res))
+    # res = np.ones(ssp.shape, dtype=np.float32)
+    return res
 
 
 def normalize(pix, save_alpha=False):
@@ -1342,6 +1411,7 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
 
 #         self.payload = _pl
 
-additional_classes = [BTT_InstallLibraries, BTT_AddonPreferences]
+# additional_classes = [BTT_InstallLibraries, BTT_AddonPreferences]
+additional_classes = [BTT_AddonPreferences]
 
 register, unregister = image_ops.create(locals(), additional_classes)
