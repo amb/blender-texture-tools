@@ -37,6 +37,11 @@ import importlib
 importlib.reload(image_ops)
 
 
+def min_ptwo(val, pt):
+    "Gives the minimum divisionally aligned value for input value"
+    return ((val - 1) // pt + 1) * pt
+
+
 class CLDev:
     "OpenCL device class specifically for image processing"
 
@@ -55,6 +60,8 @@ class CLDev:
         self.kernels = {}
 
     def build(self, name, source, argtypes=None):
+        "Build CL kernel. Load from cache if exists. Returns CL kernel."
+
         if name in self.kernels:
             print("Returned cached OpenCL instead of building:", name)
             return self.kernels[name]
@@ -76,19 +83,21 @@ class CLDev:
         return kernel
 
     def run(self, kernel, params, inputs, shape):
+        "Run CL kernel on params. Multiple in, single out. Returns Numpy.float32 array."
         # mf = cl.cl_mem_flags
         # print(a_np.shape, np.max(a_np), np.min(a_np))
         cl_inputs = []
         for ip in inputs:
+            # Only f32 and matching dimensions
             assert ip.dtype == np.float32
             assert ip.shape == inputs[0].shape
             a_g, a_evt = cl.buffer_from_ndarray(self.queue, ip, blocking=False)
             a_evt.wait()
             cl_inputs.append(a_g)
 
-        # run_evt = kernel(*params, a_g, b_g, res_g).on(self.queue, gsize=igs, lsize=ils)
         res_g = cl.clCreateBuffer(self.ctx, inputs[0].nbytes)
-        run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=shape, lsize=(8, 8))
+        f_shape = (min_ptwo(shape[0], 8), min_ptwo(shape[1], 8))
+        run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=f_shape, lsize=(8, 8))
         res_v, evt = cl.buffer_to_ndarray(self.queue, res_g, wait_for=run_evt, like=inputs[0])
         evt.wait()
 
@@ -235,7 +244,7 @@ def grayscale(ssp):
         int loc = (i+j*WIDTH)*4;
 
         float g = A[loc] * 0.2989 + A[loc+1] * 0.5870 + A[loc+2] * 0.1140;
-        
+
         output[loc] = g;
         output[loc+1] = g;
         output[loc+2] = g;

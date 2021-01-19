@@ -168,16 +168,7 @@ class ImageOperator(master_ops.MacroOperator):
         else:
             target_image = image
 
-        if self.force_numpy or CUDA_ACTIVE is False:
-            input_pixels = np.empty(len(image.pixels), dtype=np.float32)
-            # sourcepixels = np.array(input_pixels, dtype=np.float32).reshape(
-            #     source_image.size[1], source_image.size[0], 4
-            # )
-        else:
-            input_pixels = cup.empty(len(image.pixels), dtype=cup.float32)
-            # sourcepixels = cup.array(input_pixels, dtype=cup.float32).reshape(
-            #     source_image.size[1], source_image.size[0], 4
-            # )
+        input_pixels = np.empty(len(image.pixels), dtype=np.float32)
 
         image.pixels.foreach_get(input_pixels)
         # print(input_pixels.dtype, type(input_pixels))
@@ -190,11 +181,11 @@ class ImageOperator(master_ops.MacroOperator):
             target_image.size[1] != source_image.size[1]
             or target_image.size[0] != source_image.size[0]
         ):
+            print("Scaling image")
             target_image.scale(source_image.size[0], source_image.size[1])
 
-        # target_image.pixels = sourcepixels.ravel().tolist()
         # print(result.dtype, type(result))
-        print(np.max(result), np.min(result))
+        # print(np.max(result), np.min(result))
         target_image.pixels.foreach_set(np.float32(result.ravel()))
         return {"FINISHED"}
 
