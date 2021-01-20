@@ -27,7 +27,7 @@ bl_info = {
 }
 
 import bpy
-
+import functools
 import numpy as np
 from . import pycl as cl
 from ctypes import c_void_p as void_p
@@ -40,10 +40,12 @@ importlib.reload(image_ops)
 
 def min_ptwo(val, pt):
     "Gives the minimum divisionally aligned value for input value"
+    assert val > 0
+    assert pt > 0
     return ((val - 1) // pt + 1) * pt
 
 
-def image2d_to_ndarray(queue, buf, out=None, like=None, dtype="uint8", shape=None, **kw):
+def image2d_to_ndarray(queue, buf, out=None, like=None, dtype="float32", shape=None, **kw):
     "See pycl.py for buffer_to_ndarray"
     if out is None:
         if like is not None:
@@ -60,6 +62,7 @@ def image2d_to_ndarray(queue, buf, out=None, like=None, dtype="uint8", shape=Non
                 shape = buf.size // dtype.itemsize
             out = np.empty(shape, dtype)
     assert out.flags.contiguous, "Don't know how to write non-contiguous yet."
+    # print(type(out), out.shape)
     ptr = void_p(out.__array_interface__["data"][0])
     evt = cl.clEnqueueReadImage(
         queue, buf, ptr, (0, 0, 0), (out.shape[0], out.shape[1], 1), 0, 0, **kw
@@ -74,9 +77,29 @@ def image2d_from_ndarray(queue, ary, buf=None, **kw):
     ptr = void_p(ary.__array_interface__["data"][0])
     assert buf is not None
     evt = cl.clEnqueueWriteImage(
-        queue, buf, ptr, (0, 0, 0), (ary.shape[0], ary.shape[1], 1), 0, 0, **kw
+        queue, buf, ptr, (0, 0, 0), (ary.shape[1], ary.shape[0], 1), 0, 0, **kw
     )
     return (buf, evt)
+
+
+class CLImage:
+    def __init__(self, cldev, w, h):
+        self.cldev = cldev
+        self.width = w
+        self.height = h
+        self.image = cl.clCreateImage2D(cldev.ctx, w, h, imgformat=cldev.image_format)
+        # flags=self.cldev.mem_flags.CL_MEM_READ_WRITE,
+
+    def from_numpy(self, source):
+        a_g, a_evt = image2d_from_ndarray(self.cldev.queue, source, buf=self.image)
+        a_evt.wait()
+
+    def to_numpy(self):
+        res_v, evt = image2d_to_ndarray(
+            self.cldev.queue, self.image, shape=(self.width, self.height, 4)
+        )
+        evt.wait()
+        return res_v
 
 
 class CLDev:
@@ -93,6 +116,17 @@ class CLDev:
         print("Device 0 available:", d.available)
         print("Max work item sizes:", d.max_work_item_sizes)
 
+        print("Supported image formats for RGBA:")
+        self.supported_rgba = [
+            i.image_channel_data_type
+            for i in cl.clGetSupportedImageFormats(self.ctx)
+            if i.image_channel_order == cl.cl_channel_order.CL_RGBA
+        ]
+        print(self.supported_rgba)
+
+        # Ensure we have RGBA float32
+        assert cl.cl_channel_type.CL_FLOAT in self.supported_rgba
+
         self.queue = cl.clCreateCommandQueue(self.ctx)
         self.kernels = {}
 
@@ -105,7 +139,7 @@ class CLDev:
         "Build CL kernel. Load from cache if exists. Returns CL kernel."
 
         if name in self.kernels:
-            print("Cache:", name)
+            # print("Cache:", name)
             return self.kernels[name]
 
         print("Build:", name)
@@ -123,6 +157,14 @@ class CLDev:
         kernel.argtypes = argtypes
         self.kernels[name] = kernel
         return kernel
+
+    def new_image(self, width, height):
+        return CLImage(self, width, height)
+
+    def new_image_from_numpy(self, arr):
+        i = CLImage(self, arr.shape[1], arr.shape[0])
+        i.from_numpy(arr)
+        return i
 
     def get_kernel(self, name):
         if name in self.kernels:
@@ -145,7 +187,7 @@ class CLDev:
             cl_inputs.append(a_g)
 
         res_g = cl.clCreateBuffer(self.ctx, inputs[0].nbytes)
-        f_shape = (min_ptwo(inputs[0].shape[0], 8), min_ptwo(inputs[0].shape[1], 8))
+        f_shape = (min_ptwo(inputs[0].shape[1], 8), min_ptwo(inputs[0].shape[0], 8))
         run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=f_shape, lsize=(8, 8))
         res_v, evt = cl.buffer_to_ndarray(self.queue, res_g, wait_for=run_evt, like=inputs[0])
         evt.wait()
@@ -160,7 +202,7 @@ class CLDev:
         imgf = self.image_format
 
         cl_inputs = []
-        w, h = inputs[0].shape[0], inputs[0].shape[1]
+        w, h = inputs[0].shape[1], inputs[0].shape[0]
         for ip in inputs:
             # Only f32 and matching dimensions
             assert ip.dtype == np.float32
@@ -170,7 +212,7 @@ class CLDev:
             a_evt.wait()
             cl_inputs.append(a_g)
 
-        f_shape = (min_ptwo(inputs[0].shape[0], 8), min_ptwo(inputs[0].shape[1], 8))
+        f_shape = (min_ptwo(w, 8), min_ptwo(h, 8))
         res_g = cl.clCreateImage2D(self.ctx, w, h, imgformat=imgf, flags=mf.CL_MEM_WRITE_ONLY)
 
         run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=f_shape, lsize=(8, 8))
@@ -182,29 +224,23 @@ class CLDev:
 
         return res_v
 
-    def run_raw(self, kernel, params, inputs, shape, output):
-        "Run CL kernel on params. Multiple in, single out. OpenCL buffers."
+    def run_raw(self, kernel, params, inputs, output, shape=None):
+        "Run CL kernel on params. Multiple in, single out. CLImage buffers."
         assert len(inputs) > 0
-        assert len(shape) == 2
-        w, h = shape
-        f_shape = (min_ptwo(shape[0], 8), min_ptwo(shape[1], 8))
-        run_evt = kernel(*params, *inputs, output).on(self.queue, gsize=f_shape, lsize=(8, 8))
+        if shape is None:
+            shape = (min_ptwo(output.width, 8), min_ptwo(output.height, 8))
+        run_evt = kernel(*params, *[i.image for i in inputs], output.image).on(
+            self.queue, offset=(0, 0), gsize=shape, lsize=(8, 8)
+        )
         run_evt.wait()
-        return True
+
+    def to_buffer(self, narray):
+        gc_c, gc_e = cl.buffer_from_ndarray(self.queue, narray)
+        gc_e.wait()
+        return gc_c
 
 
 cl_builder = CLDev()
-
-
-# class BTT_InstallLibraries(bpy.types.Operator):
-#     bl_idname = "image.ied_install_libraries"
-#     bl_label = "Install CUDA support (cupy-cuda100 library)"
-#     def execute(self, context):
-#         from subprocess import call
-#         pp = bpy.app.binary_path_python
-#         call([pp, "-m", "ensurepip", "--user"])
-#         call([pp, "-m", "pip", "install", "--user", "cupy-cuda100"])
-#         return {"FINISHED"}
 
 
 class BTT_AddonPreferences(bpy.types.AddonPreferences):
@@ -281,6 +317,7 @@ def grayscale(ssp):
     return cl_builder.run(k, [], (ssp,))
 
 
+@functools.lru_cache(maxsize=128)
 def gauss_curve(x):
     # gaussian with 0.01831 at last
     res = np.array([np.exp(-((i * (2 / x)) ** 2)) for i in range(-x, x + 1)], dtype=np.float32)
@@ -289,45 +326,65 @@ def gauss_curve(x):
 
 
 def gaussian_repeat(pix, s):
-    # res = np.zeros(pix.shape, dtype=np.float32)
-    # gcr = gauss_curve(s)
-    # for i in range(-s, s + 1):
-    #     if i != 0:
-    #         res[:-i, ...] += pix[i:, ...] * gcr[i + s]
-    #         res[-i:, ...] += pix[:i, ...] * gcr[i + s]
-    #     else:
-    #         res += pix * gcr[s]
-    # pix2 = res.copy()
-    # res *= 0.0
-    # for i in range(-s, s + 1):
-    #     if i != 0:
-    #         res[:, :-i, :] += pix2[:, i:, :] * gcr[i + s]
-    #         res[:, -i:, :] += pix2[:, :i, :] * gcr[i + s]
-    #     else:
-    #         res += pix2 * gcr[s]
-    # return res
+    "Separated gaussian for image. Over borders = wraparound"
+    assert pix.dtype == np.float32
+    SAMPLER_DEF = """
+    const sampler_t sampler = \
+        CLK_NORMALIZED_COORDS_FALSE |
+        // CLK_ADDRESS_REPEAT |
+        CLK_ADDRESS_CLAMP_TO_EDGE |
+        CLK_FILTER_NEAREST;
+    """
+    src = """
+    __kernel void gaussian_h(
+        const int s,
+        __global float *gc,
+        __read_only image2d_t input,
+        __write_only image2d_t output)
+    {{
+        {sampler}
+        const int x = get_global_id(0), y = get_global_id(1);
+        const int width = get_image_width(output), height = get_image_height(output);
+        float4 color = (float4)0.0f;
+        for (int i=0;i<s*2+1;i++)  {{
+            color += read_imagef(input, sampler, (int2)(((x+i-s)+width)%width,y)) * gc[i];
+        }}
+        write_imagef(output, (int2)(x,y), color);
+    }}
+    """.format(
+        sampler=SAMPLER_DEF
+    )
+    kh = cl_builder.build("gaussian_h", src, (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image))
 
     src = """
-    __kernel void gaussian(
+    __kernel void gaussian_v(
         const int s,
-        __read_only image2d_t A,
+        __global float *gc,
+        __read_only image2d_t input,
         __write_only image2d_t output)
-    {
-        const int2 loc = (int2)(get_global_id(0), get_global_id(1));
-        const sampler_t sampler = \
-            CLK_NORMALIZED_COORDS_FALSE |
-            CLK_ADDRESS_REPEAT |
-            CLK_FILTER_NEAREST;
-        float4 px = read_imagef(A, sampler, loc);
-        //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
-        float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-        write_imagef(output, loc, (float4)(g, g, g, px.w));
-    }
-    """
+    {{
+        {sampler}
+        const int x = get_global_id(0), y = get_global_id(1);
+        const int width = get_image_width(output), height = get_image_height(output);
+        float4 color = (float4)0.0f;
+        for (int i=0;i<s*2+1;i++)  {{
+            color += read_imagef(input, sampler, (int2)(x,((y+i-s)+height)%height)) * gc[i];
+        }}
+        write_imagef(output, (int2)(x,y), color);
+    }}
+    """.format(
+        sampler=SAMPLER_DEF
+    )
+    kv = cl_builder.build("gaussian_v", src, (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image))
 
-    k = cl_builder.build("gaussian", src, (cl.cl_int, cl.cl_image, cl.cl_image))
-    r = cl_builder.run(k, [s], (pix,))
-    return r
+    gc_c = cl_builder.to_buffer(gauss_curve(s))
+    img = cl_builder.new_image_from_numpy(pix)
+    out = cl_builder.new_image(img.width, img.height)
+    cl_builder.run_raw(kh, [s, gc_c], (img,), out)
+    cl_builder.run_raw(kv, [s, gc_c], (out,), img)
+    return img.to_numpy()
+
+    # return cl_builder.run(kh, [s], (pix,))
 
 
 def vectors_to_nmap(vectors, nmap):
@@ -1143,51 +1200,74 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
-class Fractal_IOP(image_ops.ImageOperatorGenerator):
+class TestPattern_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["count"] = bpy.props.IntProperty(name="Count", min=1, default=2)
-        self.props["style"] = bpy.props.EnumProperty(
-            name="Style",
-            items=[
-                ("blend", "Blend", "", 1),
-                ("multiply", "Multiply", "", 2),
-                ("multiply_b", "Multiply B", "", 3),
-            ],
-        )
-        self.prefix = "fractal"
-        self.info = "Fractalize image"
+        # self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
+        # self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
+        # self.props["direction"] = bpy.props.EnumProperty(
+        #     name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
+        # )
+        self.prefix = "test_pattern"
+        self.info = "Test pattern"
         self.category = "Basic"
 
         def _pl(self, image, context):
-            # A = image[..., 3]
-            iw, ih = image.shape[1], image.shape[0]
-            iwh, ihh = iw // 2, ih // 2
+            # RED
+            image[:, 90:100, 0] = 1.0
 
-            pix = image.copy()
-            for i in range(self.count):
-                if self.style == "blend":
-                    smol = pix[::2, ::2, :] * 0.5
-                    pix *= 0.5
-                    pix[:ihh, :iwh, :] += smol
-                    pix[-ihh:, :iwh, :] += smol
-                    pix[:ihh, -iwh:, :] += smol
-                    pix[-ihh:, -iwh:, :] += smol
-                else:
-                    smol = pix[::2, ::2, :].copy() * 2.0
-                    pix[:ihh, :iwh, :] *= smol
-                    pix[ihh:, :iwh, :] *= smol
-                    pix[:ihh, iwh:, :] *= smol
-                    pix[ihh:, iwh:, :] *= smol
+            # GREEN
+            image[90:100, :, 1] = 1.0
 
-                    if self.style == "multiply":
-                        pix *= 0.5
-                    else:
-                        pix = (pix - 0.5) * 0.5 + 0.5
-
-            # pix[..., 3] = A
-            return pix
+            return image
 
         self.payload = _pl
+
+
+# class Fractal_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         self.props["count"] = bpy.props.IntProperty(name="Count", min=1, default=2)
+#         self.props["style"] = bpy.props.EnumProperty(
+#             name="Style",
+#             items=[
+#                 ("blend", "Blend", "", 1),
+#                 ("multiply", "Multiply", "", 2),
+#                 ("multiply_b", "Multiply B", "", 3),
+#             ],
+#         )
+#         self.prefix = "fractal"
+#         self.info = "Fractalize image"
+#         self.category = "Basic"
+
+#         def _pl(self, image, context):
+#             # A = image[..., 3]
+#             iw, ih = image.shape[1], image.shape[0]
+#             iwh, ihh = iw // 2, ih // 2
+
+#             pix = image.copy()
+#             for i in range(self.count):
+#                 if self.style == "blend":
+#                     smol = pix[::2, ::2, :] * 0.5
+#                     pix *= 0.5
+#                     pix[:ihh, :iwh, :] += smol
+#                     pix[-ihh:, :iwh, :] += smol
+#                     pix[:ihh, -iwh:, :] += smol
+#                     pix[-ihh:, -iwh:, :] += smol
+#                 else:
+#                     smol = pix[::2, ::2, :].copy() * 2.0
+#                     pix[:ihh, :iwh, :] *= smol
+#                     pix[ihh:, :iwh, :] *= smol
+#                     pix[:ihh, iwh:, :] *= smol
+#                     pix[ihh:, iwh:, :] *= smol
+
+#                     if self.style == "multiply":
+#                         pix *= 0.5
+#                     else:
+#                         pix = (pix - 0.5) * 0.5 + 0.5
+
+#             # pix[..., 3] = A
+#             return pix
+
+#         self.payload = _pl
 
 
 class Normalize_IOP(image_ops.ImageOperatorGenerator):
