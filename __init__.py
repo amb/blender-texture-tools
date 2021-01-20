@@ -96,14 +96,19 @@ class CLDev:
         self.queue = cl.clCreateCommandQueue(self.ctx)
         self.kernels = {}
 
+        self.mem_flags = cl.cl_mem_flags
+        self.image_format = cl.cl_image_format(
+            cl.cl_channel_order.CL_RGBA, cl.cl_channel_type.CL_FLOAT
+        )
+
     def build(self, name, source, argtypes=None):
         "Build CL kernel. Load from cache if exists. Returns CL kernel."
 
         if name in self.kernels:
-            print("Returned cached OpenCL instead of building:", name)
+            print("Cache:", name)
             return self.kernels[name]
 
-        print("Building OpenCL kernel:", name)
+        print("Build:", name)
         try:
             b = cl.clCreateProgramWithSource(self.ctx, source).build()
             kernel = b[name]
@@ -119,7 +124,13 @@ class CLDev:
         self.kernels[name] = kernel
         return kernel
 
-    def run_np(self, kernel, params, inputs):
+    def get_kernel(self, name):
+        if name in self.kernels:
+            return self.kernels[name]
+        else:
+            return None
+
+    def run_buffer(self, kernel, params, inputs):
         "Run CL kernel on params. Multiple in, single out. Returns Numpy.float32 array."
         # mf = cl.cl_mem_flags
         # print(a_np.shape, np.max(a_np), np.min(a_np))
@@ -145,16 +156,15 @@ class CLDev:
         "Run CL kernel on params. Multiple in, single out. Returns Numpy.float32 array."
         assert len(inputs) > 0
 
-        mf = cl.cl_mem_flags
-        imgf = cl.cl_image_format(cl.cl_channel_order.CL_RGBA, cl.cl_channel_type.CL_FLOAT)
-        # print(a_np.shape, np.max(a_np), np.min(a_np))
+        mf = self.mem_flags
+        imgf = self.image_format
+
         cl_inputs = []
         w, h = inputs[0].shape[0], inputs[0].shape[1]
         for ip in inputs:
             # Only f32 and matching dimensions
             assert ip.dtype == np.float32
             assert ip.shape == inputs[0].shape
-
             img_b = cl.clCreateImage2D(self.ctx, w, h, imgformat=imgf, flags=mf.CL_MEM_READ_ONLY)
             a_g, a_evt = image2d_from_ndarray(self.queue, ip, buf=img_b)
             a_evt.wait()
@@ -162,13 +172,25 @@ class CLDev:
 
         f_shape = (min_ptwo(inputs[0].shape[0], 8), min_ptwo(inputs[0].shape[1], 8))
         res_g = cl.clCreateImage2D(self.ctx, w, h, imgformat=imgf, flags=mf.CL_MEM_WRITE_ONLY)
+
         run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=f_shape, lsize=(8, 8))
         res_v, evt = image2d_to_ndarray(self.queue, res_g, wait_for=run_evt, like=inputs[0])
         evt.wait()
-        print(np.max(res_v), np.min(res_v))
 
+        # print(np.max(res_v), np.min(res_v))
         # return np.ones(inputs[0].shape, dtype=np.float32)
+
         return res_v
+
+    def run_raw(self, kernel, params, inputs, shape, output):
+        "Run CL kernel on params. Multiple in, single out. OpenCL buffers."
+        assert len(inputs) > 0
+        assert len(shape) == 2
+        w, h = shape
+        f_shape = (min_ptwo(shape[0], 8), min_ptwo(shape[1], 8))
+        run_evt = kernel(*params, *inputs, output).on(self.queue, gsize=f_shape, lsize=(8, 8))
+        run_evt.wait()
+        return True
 
 
 cl_builder = CLDev()
@@ -208,7 +230,7 @@ class BTT_AddonPreferences(bpy.types.AddonPreferences):
         row.label(text="All optional libraries installed")
 
 
-def grayscale_np(ssp):
+def grayscale_cl_array(ssp):
     src = """
     __kernel void grayscale(
         const int WIDTH,
@@ -240,7 +262,7 @@ def grayscale(ssp):
     src = """
     __kernel void grayscale(
         __read_only image2d_t A,
-        __read_only image2d_t B,
+        //__read_only image2d_t B,
         __write_only image2d_t output)
     {
         const int2 loc = (int2)(get_global_id(0), get_global_id(1));
@@ -248,24 +270,15 @@ def grayscale(ssp):
             CLK_NORMALIZED_COORDS_FALSE |
             CLK_ADDRESS_REPEAT |
             CLK_FILTER_NEAREST;
-
         float4 px = read_imagef(A, sampler, loc);
-
-        float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-        float4 rpx = px;
-        rpx.x = g;
-        rpx.y = g;
-        rpx.z = g;
-        rpx.w = 1.0;
-
         //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
-        write_imagef(output, loc, rpx);
+        float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
+        write_imagef(output, loc, (float4)(g, g, g, px.w));
     }
     """
 
-    k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image, cl.cl_image))
-    res = cl_builder.run(k, [], (ssp, ssp))
-    return res
+    k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image))
+    return cl_builder.run(k, [], (ssp,))
 
 
 def gauss_curve(x):
@@ -273,6 +286,48 @@ def gauss_curve(x):
     res = np.array([np.exp(-((i * (2 / x)) ** 2)) for i in range(-x, x + 1)], dtype=np.float32)
     res /= np.sum(res)
     return res
+
+
+def gaussian_repeat(pix, s):
+    # res = np.zeros(pix.shape, dtype=np.float32)
+    # gcr = gauss_curve(s)
+    # for i in range(-s, s + 1):
+    #     if i != 0:
+    #         res[:-i, ...] += pix[i:, ...] * gcr[i + s]
+    #         res[-i:, ...] += pix[:i, ...] * gcr[i + s]
+    #     else:
+    #         res += pix * gcr[s]
+    # pix2 = res.copy()
+    # res *= 0.0
+    # for i in range(-s, s + 1):
+    #     if i != 0:
+    #         res[:, :-i, :] += pix2[:, i:, :] * gcr[i + s]
+    #         res[:, -i:, :] += pix2[:, :i, :] * gcr[i + s]
+    #     else:
+    #         res += pix2 * gcr[s]
+    # return res
+
+    src = """
+    __kernel void gaussian(
+        const int s,
+        __read_only image2d_t A,
+        __write_only image2d_t output)
+    {
+        const int2 loc = (int2)(get_global_id(0), get_global_id(1));
+        const sampler_t sampler = \
+            CLK_NORMALIZED_COORDS_FALSE |
+            CLK_ADDRESS_REPEAT |
+            CLK_FILTER_NEAREST;
+        float4 px = read_imagef(A, sampler, loc);
+        //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
+        float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
+        write_imagef(output, loc, (float4)(g, g, g, px.w));
+    }
+    """
+
+    k = cl_builder.build("gaussian", src, (cl.cl_int, cl.cl_image, cl.cl_image))
+    r = cl_builder.run(k, [s], (pix,))
+    return r
 
 
 def vectors_to_nmap(vectors, nmap):
@@ -384,26 +439,6 @@ def sobel(pix, intensity):
     retarr = (retarr * intensity) * 0.5 + 0.5
     retarr[..., 3] = pix[..., 3]
     return retarr
-
-
-def gaussian_repeat(pix, s):
-    res = np.zeros(pix.shape, dtype=np.float32)
-    gcr = gauss_curve(s)
-    for i in range(-s, s + 1):
-        if i != 0:
-            res[:-i, ...] += pix[i:, ...] * gcr[i + s]
-            res[-i:, ...] += pix[:i, ...] * gcr[i + s]
-        else:
-            res += pix * gcr[s]
-    pix2 = res.copy()
-    res *= 0.0
-    for i in range(-s, s + 1):
-        if i != 0:
-            res[:, :-i, :] += pix2[:, i:, :] * gcr[i + s]
-            res[:, -i:, :] += pix2[:, :i, :] * gcr[i + s]
-        else:
-            res += pix2 * gcr[s]
-    return res
 
 
 def sharpen(pix, width, intensity):
