@@ -424,11 +424,23 @@ def bilateral_cl(pix, radius, preserve):
     return out.to_numpy()
 
 
+def median_filter(pix, s, picked="center"):
+
+    return pix
+
+
 def vectors_to_nmap(vectors, nmap):
     vectors *= 0.5
     nmap[:, :, 0] = vectors[:, :, 0] + 0.5
     nmap[:, :, 1] = vectors[:, :, 1] + 0.5
     nmap[:, :, 2] = vectors[:, :, 2] + 0.5
+
+
+def explicit_cross(a, b):
+    x = a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1]
+    y = a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2]
+    z = a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+    return np.dstack([x, y, z])
 
 
 def nmap_to_vectors(nmap):
@@ -442,57 +454,6 @@ def nmap_to_vectors(nmap):
 
 def neighbour_average(ig):
     return (ig[1:-1, :-2] + ig[1:-1, 2:] + ig[:-2, 1:-1] + ig[:-2, 1:-1]) * 0.25
-
-
-def explicit_cross(a, b):
-    x = a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1]
-    y = a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2]
-    z = a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
-    return np.dstack([x, y, z])
-
-
-def aroll0(o, i, d):
-    if d > 0:
-        k = d
-        o[:-k, :] = i[k:, :]
-        o[-k:, :] = i[:k, :]
-    elif d < 0:
-        k = -d
-        o[k:, :] = i[:-k, :]
-        o[:k, :] = i[-k:, :]
-
-
-def aroll1(o, i, d):
-    if d > 0:
-        k = d
-        o[:, :-k] = i[:, k:]
-        o[:, -k:] = i[:, :k]
-    elif d < 0:
-        k = -d
-        o[:, k:] = i[:, :-k]
-        o[:, :k] = i[:, -k:]
-
-
-def addroll0(o, i, d):
-    if d > 0:
-        k = d
-        o[:-k, :] += i[k:, :]
-        o[-k:, :] += i[:k, :]
-    elif d < 0:
-        k = -d
-        o[k:, :] += i[:-k, :]
-        o[:k, :] += i[-k:, :]
-
-
-def addroll1(o, i, d):
-    if d > 0:
-        k = d
-        o[:, :-k] += i[:, k:]
-        o[:, -k:] += i[:, :k]
-    elif d < 0:
-        k = -d
-        o[:, k:] += i[:, :-k]
-        o[:, :k] += i[:, -k:]
 
 
 def convolution(ssp, intens, sfil):
@@ -549,25 +510,6 @@ def hi_pass(pix, s, intensity):
     pix = (bg - gaussian_repeat(pix, s)) * 0.5 + 0.5
     pix[:, :, 3] = bg[:, :, 3]
     return pix
-
-
-def gaussian_repeat_fit(pix, s):
-    rf = s
-    pix[0, :] = (pix[0, :] + pix[-1, :]) * 0.5
-    pix[-1, :] = pix[0, :]
-    for i in range(1, rf):
-        factor = ((rf - i)) / rf
-        pix[i, :] = pix[0, :] * factor + pix[i, :] * (1 - factor)
-        pix[-i, :] = pix[0, :] * factor + pix[-i, :] * (1 - factor)
-
-    pix[:, 0] = (pix[:, 0] + pix[:, -1]) * 0.5
-    pix[:, -1] = pix[:, 0]
-    for i in range(1, rf):
-        factor = ((rf - i)) / rf
-        pix[:, i] = pix[:, 0] * factor + pix[:, i] * (1 - factor)
-        pix[:, -i] = pix[:, 0] * factor + pix[:, -i] * (1 - factor)
-
-    return gaussian_repeat(pix, s)
 
 
 def hist_match(source, template):
@@ -706,104 +648,6 @@ def hgram_equalize(pix, intensity, atest):
         # pix[..., c][aws] = np.argsort(t)
     pix[..., :3] /= np.max(pix[..., :3])
     return old * (1.0 - intensity) + pix * intensity
-
-
-def bilateral(img_in, sigma_s, sigma_v, eps=1e-8):
-    # gaussian
-    gsi = lambda r2, sigma: np.exp(-0.5 * r2 / sigma ** 2)
-    win_width = int(np.ceil(3 * sigma_s))
-    wgt_sum = np.ones(img_in.shape) * eps
-    result = img_in * eps
-    off = np.empty_like(img_in, dtype=np.float32)
-
-    assert off.dtype == img_in.dtype
-    assert off.shape == img_in.shape
-
-    for shft_x in range(-win_width, win_width + 1):
-        for shft_y in range(-win_width, win_width + 1):
-            aroll0(off, img_in, shft_y)
-            aroll1(off, off, shft_x)
-
-            w = gsi(shft_x ** 2 + shft_y ** 2, sigma_s)
-            tw = w * gsi((off - img_in) ** 2, sigma_v)
-            result += off * tw
-            wgt_sum += tw
-
-    # normalize the result and return
-    return result / wgt_sum
-
-
-def bilateral_filter(pix, s, intensity, source):
-    # multiply by alpha
-    # pix[..., 0] *= pix[..., 3]
-    # pix[..., 1] *= pix[..., 3]
-    # pix[..., 2] *= pix[..., 3]
-
-    # TODO: this
-    # if source == "SOBEL":
-    #     sb = sobel(pix, 1.0)
-    # else:
-    #     sb = pix
-
-    sb = pix
-
-    print("R")
-    # image, spatial, range
-    pix[..., 0] = bilateral(sb[..., 0], s, intensity)
-    print("G")
-    pix[..., 1] = bilateral(sb[..., 1], s, intensity)
-    print("B")
-    pix[..., 2] = bilateral(sb[..., 2], s, intensity)
-
-    return pix
-
-
-def median_filter_blobs(pix, s, picked="center"):
-    ph, pw = pix.shape[0], pix.shape[1]
-
-    pick = 0
-    if picked == "center":
-        pick = s
-    if picked == "end":
-        pick = s * 2 - 1
-
-    temp = pix.copy()
-    r = np.zeros((ph, s * 2, 4), dtype=np.float32)
-    for x in range(pw):
-        if x - s >= 0 and x + s <= pw:
-            r[:, :, :] = temp[:, x - s : x + s, :]
-
-        if x - s < 0:
-            dp = s - x
-            r[:, dp:, :] = temp[:, : x + s, :]
-            r[:, :dp, :] = temp[:, -dp:, :]
-
-        if x + s > pw:
-            dp = x + s - pw
-            r[:, :-dp, :] = temp[:, x - s :, :]
-            r[:, -dp:, :] = temp[:, :dp, :]
-
-        pix[:, x, :] = np.sort(r, axis=1)[:, pick, :]
-
-    temp = pix.copy()
-    r = np.zeros((s * 2, pw, 4), dtype=np.float32)
-    for y in range(ph):
-        if y - s >= 0 and y + s <= ph:
-            r[:, :, :] = temp[y - s : y + s, :, :]
-
-        if y - s < 0:
-            dp = s - y
-            r[dp:, :, :] = temp[: y + s, :, :]
-            r[:dp, :, :] = temp[-dp:, :, :]
-
-        if y + s > pw:
-            dp = y + s - pw
-            r[:-dp, :, :] = temp[y - s :, :, :]
-            r[-dp:, :, :] = temp[:dp, :, :]
-
-        pix[y, :, :] = np.sort(r, axis=0)[pick, :, :]
-
-    return pix
 
 
 def normals_simple(pix, source):
@@ -1336,7 +1180,7 @@ class CropToSquare_IOP(image_ops.ImageOperatorGenerator):
 class Sharpen_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=2, default=5)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=0.6)
+        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "sharpen"
         self.info = "Simple sharpen"
         self.category = "Filter"
@@ -1376,7 +1220,7 @@ class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: gaussian_repeat(image, self.width)
 
 
-class BlobMedian_IOP(image_ops.ImageOperatorGenerator):
+class Median_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["style"] = bpy.props.EnumProperty(
             name="Style",
@@ -1387,19 +1231,21 @@ class BlobMedian_IOP(image_ops.ImageOperatorGenerator):
             ],
         )
         self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
-        self.prefix = "blob_median"
-        self.info = "Blob median filter"
+        self.prefix = "median_filter"
+        self.info = "Median filter"
         self.category = "Filter"
-        self.payload = lambda self, image, context: median_filter_blobs(
+        self.payload = lambda self, image, context: median_filter(
             image, self.width, picked=self.style
         )
 
 
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["radius"] = bpy.props.FloatProperty(name="Radius", min=0.01, default=3.0)
+        self.props["radius"] = bpy.props.FloatProperty(
+            name="Radius", min=0.01, max=100.0, default=3.0
+        )
         self.props["preserve"] = bpy.props.FloatProperty(
-            name="Preserve", min=0.01, default=0.3
+            name="Preserve", min=0.01, max=100.0, default=0.3
         )
         self.prefix = "bilateral"
         self.info = "Bilateral"
