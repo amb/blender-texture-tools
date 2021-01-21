@@ -45,28 +45,13 @@ def min_ptwo(val, pt):
     return ((val - 1) // pt + 1) * pt
 
 
-def image2d_to_ndarray(queue, buf, out=None, like=None, dtype="float32", shape=None, **kw):
+def image2d_to_ndarray(queue, buf, shape, out=None, like=None, dtype="float32", **kw):
     "See pycl.py for buffer_to_ndarray"
-    if out is None:
-        if like is not None:
-            if not np:
-                raise Exception("numpy not available")
-
-            out = np.empty_like(like)
-        else:
-            if not np:
-                raise Exception("numpy not available")
-
-            dtype = np.dtype(dtype)
-            if shape is None:
-                shape = buf.size // dtype.itemsize
-            out = np.empty(shape, dtype)
+    out = np.empty((shape[1], shape[0], 4), dtype)
     assert out.flags.contiguous, "Don't know how to write non-contiguous yet."
     # print(type(out), out.shape)
     ptr = void_p(out.__array_interface__["data"][0])
-    evt = cl.clEnqueueReadImage(
-        queue, buf, ptr, (0, 0, 0), (out.shape[0], out.shape[1], 1), 0, 0, **kw
-    )
+    evt = cl.clEnqueueReadImage(queue, buf, ptr, (0, 0, 0), (shape[0], shape[1], 1), 0, 0, **kw)
     return (out, evt)
 
 
@@ -95,9 +80,7 @@ class CLImage:
         a_evt.wait()
 
     def to_numpy(self):
-        res_v, evt = image2d_to_ndarray(
-            self.cldev.queue, self.image, shape=(self.width, self.height, 4)
-        )
+        res_v, evt = image2d_to_ndarray(self.cldev.queue, self.image, (self.width, self.height, 4))
         evt.wait()
         return res_v
 
@@ -162,6 +145,7 @@ class CLDev:
         return CLImage(self, width, height)
 
     def new_image_from_numpy(self, arr):
+        "shape[0]=height, shape[1]=width"
         i = CLImage(self, arr.shape[1], arr.shape[0])
         i.from_numpy(arr)
         return i
@@ -216,7 +200,7 @@ class CLDev:
         res_g = cl.clCreateImage2D(self.ctx, w, h, imgformat=imgf, flags=mf.CL_MEM_WRITE_ONLY)
 
         run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=f_shape, lsize=(8, 8))
-        res_v, evt = image2d_to_ndarray(self.queue, res_g, wait_for=run_evt, like=inputs[0])
+        res_v, evt = image2d_to_ndarray(self.queue, res_g, (w, h, 4), wait_for=run_evt)
         evt.wait()
 
         # print(np.max(res_v), np.min(res_v))
@@ -328,54 +312,44 @@ def gauss_curve(x):
 def gaussian_repeat(pix, s):
     "Separated gaussian for image. Over borders = wraparound"
     assert pix.dtype == np.float32
+
     SAMPLER_DEF = """
     const sampler_t sampler = \
         CLK_NORMALIZED_COORDS_FALSE |
-        // CLK_ADDRESS_REPEAT |
         CLK_ADDRESS_CLAMP_TO_EDGE |
         CLK_FILTER_NEAREST;
+    const int x = get_global_id(0), y = get_global_id(1);
+    const int width = get_image_width(output), height = get_image_height(output);
     """
-    src = """
-    __kernel void gaussian_h(
-        const int s,
-        __global float *gc,
-        __read_only image2d_t input,
-        __write_only image2d_t output)
-    {{
-        {sampler}
-        const int x = get_global_id(0), y = get_global_id(1);
-        const int width = get_image_width(output), height = get_image_height(output);
-        float4 color = (float4)0.0f;
-        for (int i=0;i<s*2+1;i++)  {{
-            color += read_imagef(input, sampler, (int2)(((x+i-s)+width)%width,y)) * gc[i];
-        }}
-        write_imagef(output, (int2)(x,y), color);
-    }}
-    """.format(
-        sampler=SAMPLER_DEF
-    )
-    kh = cl_builder.build("gaussian_h", src, (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image))
 
-    src = """
-    __kernel void gaussian_v(
-        const int s,
-        __global float *gc,
-        __read_only image2d_t input,
-        __write_only image2d_t output)
-    {{
-        {sampler}
-        const int x = get_global_id(0), y = get_global_id(1);
-        const int width = get_image_width(output), height = get_image_height(output);
-        float4 color = (float4)0.0f;
-        for (int i=0;i<s*2+1;i++)  {{
-            color += read_imagef(input, sampler, (int2)(x,((y+i-s)+height)%height)) * gc[i];
-        }}
-        write_imagef(output, (int2)(x,y), color);
-    }}
-    """.format(
-        sampler=SAMPLER_DEF
-    )
-    kv = cl_builder.build("gaussian_v", src, (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image))
+    def _builder(name, core):
+        return cl_builder.build(
+            name,
+            """
+            __kernel void {NAME}(
+                const int s,
+                const __global float *gc,
+                __read_only image2d_t input,
+                __write_only image2d_t output)
+            {{
+                {SAMPLER}
+                float4 color = (float4)0.0f;
+                for (int i=0;i<s*2+1;i++)  {{
+                    color += read_imagef(input, sampler, (int2)({CORE})) * gc[i];
+                }}
+                write_imagef(output, (int2)(x,y), color);
+            }}
+            """.format(
+                SAMPLER=SAMPLER_DEF, CORE=core, NAME=name
+            ),
+            (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image),
+        )
+
+    # Horizontal gaussian blur wraparound
+    kh = _builder("gaussian_h", "((x+i-s)+width)%width,y")
+
+    # Vertical gaussian blur wraparound
+    kv = _builder("gaussian_v", "x,((y+i-s)+height)%height")
 
     gc_c = cl_builder.to_buffer(gauss_curve(s))
     img = cl_builder.new_image_from_numpy(pix)
@@ -384,7 +358,70 @@ def gaussian_repeat(pix, s):
     cl_builder.run_raw(kv, [s, gc_c], (out,), img)
     return img.to_numpy()
 
-    # return cl_builder.run(kh, [s], (pix,))
+
+def bilateral_cl(pix, radius, preserve):
+    "Bilateral filter, OpenCL implementation"
+
+    src = """
+    #define POW2(a) ((a) * (a))
+    kernel void bilateral(
+        const float radius,
+        const float preserve,
+        __read_only image2d_t input,
+        __write_only image2d_t output
+    )
+    {
+        int gidx       = get_global_id(0);
+        int gidy       = get_global_id(1);
+        const sampler_t sampler = \
+            CLK_NORMALIZED_COORDS_FALSE |
+            CLK_ADDRESS_CLAMP_TO_EDGE |
+            CLK_FILTER_NEAREST;
+
+        int n_radius   = ceil(radius);
+        int dst_width  = get_global_size(0);
+        int src_width  = dst_width + n_radius * 2;
+
+        int u, v, i, j;
+
+        float4 center_pix =
+            read_imagef(input, sampler, (int2)(gidx, gidy));
+
+        float4 accumulated = 0.0f;
+        float4 tempf       = 0.0f;
+        float  count       = 0.0f;
+        float  diff_map, gaussian_weight, weight;
+
+        for (v = -n_radius;v <= n_radius; ++v) {
+            for (u = -n_radius;u <= n_radius; ++u) {
+                i = gidx + u;
+                j = gidy + v;
+
+                tempf = read_imagef(input, sampler, (int2)(i, j));
+                diff_map = exp (
+                    - (   POW2(center_pix.x - tempf.x)
+                        + POW2(center_pix.y - tempf.y)
+                        + POW2(center_pix.z - tempf.z))
+                    * preserve);
+
+                gaussian_weight =
+                    exp( - 0.5f * (POW2(u) + POW2(v)) / radius);
+
+                weight = diff_map * gaussian_weight;
+
+                accumulated += tempf * weight;
+                count += weight;
+            }
+        }
+        write_imagef(output, (int2)(gidx,gidy), accumulated / count);
+        //write_imagef(output, (int2)(gidx,gidy), (float4)(1.0, 0.0, 1.0, 1.0));
+    }
+    """
+    blr = cl_builder.build("bilateral", src, (cl.cl_float, cl.cl_float, cl.cl_image, cl.cl_image))
+    img = cl_builder.new_image_from_numpy(pix)
+    out = cl_builder.new_image(img.width, img.height)
+    cl_builder.run_raw(blr, [radius, preserve], (img,), out)
+    return out.to_numpy()
 
 
 def vectors_to_nmap(vectors, nmap):
@@ -647,7 +684,7 @@ def hi_pass_balance(pix, s, zoom):
     pixmax = np.max(pix)
     med = (pixmin + pixmax) / 2
     # TODO: np.mean
-    gas = gaussian_repeat_np(pix - med, s) + med
+    gas = gaussian_repeat(pix - med, s) + med
     pix = (pix - gas) * 0.5 + 0.5
     for c in range(3):
         pix[..., c] = hist_match(
@@ -1223,53 +1260,6 @@ class TestPattern_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
-# class Fractal_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.props["count"] = bpy.props.IntProperty(name="Count", min=1, default=2)
-#         self.props["style"] = bpy.props.EnumProperty(
-#             name="Style",
-#             items=[
-#                 ("blend", "Blend", "", 1),
-#                 ("multiply", "Multiply", "", 2),
-#                 ("multiply_b", "Multiply B", "", 3),
-#             ],
-#         )
-#         self.prefix = "fractal"
-#         self.info = "Fractalize image"
-#         self.category = "Basic"
-
-#         def _pl(self, image, context):
-#             # A = image[..., 3]
-#             iw, ih = image.shape[1], image.shape[0]
-#             iwh, ihh = iw // 2, ih // 2
-
-#             pix = image.copy()
-#             for i in range(self.count):
-#                 if self.style == "blend":
-#                     smol = pix[::2, ::2, :] * 0.5
-#                     pix *= 0.5
-#                     pix[:ihh, :iwh, :] += smol
-#                     pix[-ihh:, :iwh, :] += smol
-#                     pix[:ihh, -iwh:, :] += smol
-#                     pix[-ihh:, -iwh:, :] += smol
-#                 else:
-#                     smol = pix[::2, ::2, :].copy() * 2.0
-#                     pix[:ihh, :iwh, :] *= smol
-#                     pix[ihh:, :iwh, :] *= smol
-#                     pix[:ihh, iwh:, :] *= smol
-#                     pix[ihh:, iwh:, :] *= smol
-
-#                     if self.style == "multiply":
-#                         pix *= 0.5
-#                     else:
-#                         pix = (pix - 0.5) * 0.5 + 0.5
-
-#             # pix[..., 3] = A
-#             return pix
-
-#         self.payload = _pl
-
-
 class Normalize_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "normalize"
@@ -1407,19 +1397,14 @@ class BlobMedian_IOP(image_ops.ImageOperatorGenerator):
 
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        # self.props["source"] = bpy.props.EnumProperty(
-        #     name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
-        # )
-        self.props["sigma_a"] = bpy.props.FloatProperty(name="Sigma A", min=0.01, default=3.0)
-        self.props["sigma_b"] = bpy.props.FloatProperty(
-            name="Sigma B", min=0.01, max=1.0, default=0.3
+        self.props["radius"] = bpy.props.FloatProperty(name="Radius", min=0.01, default=3.0)
+        self.props["preserve"] = bpy.props.FloatProperty(
+            name="Preserve", min=0.01, default=0.3
         )
         self.prefix = "bilateral"
         self.info = "Bilateral"
         self.category = "Filter"
-        self.payload = lambda self, image, context: bilateral_filter(
-            image, self.sigma_a, self.sigma_b, ""
-        )
+        self.payload = lambda self, image, context: bilateral_cl(image, self.radius, self.preserve)
 
 
 class HiPass_IOP(image_ops.ImageOperatorGenerator):
