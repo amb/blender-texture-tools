@@ -144,11 +144,11 @@ class ImageOperator(master_ops.MacroOperator):
         result = self.payload(input_pixels, context)
 
         if (
-            target_image.size[1] != source_image.size[1]
-            or target_image.size[0] != source_image.size[0]
+            target_image.size[1] != result.shape[0]
+            or target_image.size[0] != result.shape[1]
         ):
             print("Scaling image")
-            target_image.scale(source_image.size[0], source_image.size[1])
+            target_image.scale(result.shape[1], result.shape[0])
 
         # print(result.dtype, type(result))
         # print(np.max(result), np.min(result))

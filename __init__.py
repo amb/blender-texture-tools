@@ -45,13 +45,15 @@ def min_ptwo(val, pt):
     return ((val - 1) // pt + 1) * pt
 
 
-def image2d_to_ndarray(queue, buf, shape, out=None, like=None, dtype="float32", **kw):
+def image2d_to_ndarray(queue, buf, shape, out=None, like=None, **kw):
     "See pycl.py for buffer_to_ndarray"
-    out = np.empty((shape[1], shape[0], 4), dtype)
+    w, h = shape[0], shape[1]
+    out = np.empty((h, w, 4), dtype=np.float32)
     assert out.flags.contiguous, "Don't know how to write non-contiguous yet."
     # print(type(out), out.shape)
     ptr = void_p(out.__array_interface__["data"][0])
-    evt = cl.clEnqueueReadImage(queue, buf, ptr, (0, 0, 0), (shape[0], shape[1], 1), 0, 0, **kw)
+    # TODO: enforce x%8==0 pixel step
+    evt = cl.clEnqueueReadImage(queue, buf, ptr, (0, 0, 0), (w, h, 1), w * 4 * 4, 0, **kw)
     return (out, evt)
 
 
@@ -93,7 +95,9 @@ class CLDev:
         for dev in self.ctx.devices:
             print(dev.name)
 
-        d = cl.clGetDeviceIDs()[0]
+        dvids = cl.clGetDeviceIDs()
+        # print(len(dvids))
+        d = dvids[0]
         cl.clGetDeviceInfo(d, cl.cl_device_info.CL_DEVICE_NAME)
         cl.clGetDeviceInfo(d, cl.cl_device_info.CL_DEVICE_TYPE)
         print("Device 0 available:", d.available)
@@ -282,7 +286,6 @@ def grayscale(ssp):
     src = """
     __kernel void grayscale(
         __read_only image2d_t A,
-        //__read_only image2d_t B,
         __write_only image2d_t output)
     {
         const int2 loc = (int2)(get_global_id(0), get_global_id(1));
@@ -362,6 +365,7 @@ def gaussian_repeat(pix, s):
 def bilateral_cl(pix, radius, preserve):
     "Bilateral filter, OpenCL implementation"
 
+    # TODO: out of memory on big images and radius
     src = """
     #define POW2(a) ((a) * (a))
     kernel void bilateral(
@@ -394,19 +398,14 @@ def bilateral_cl(pix, radius, preserve):
 
         for (v = -n_radius;v <= n_radius; ++v) {
             for (u = -n_radius;u <= n_radius; ++u) {
-                i = gidx + u;
-                j = gidy + v;
-
-                tempf = read_imagef(input, sampler, (int2)(i, j));
+                tempf = read_imagef(input, sampler, (int2)(gidx + u, gidy + v));
                 diff_map = exp (
                     - (   POW2(center_pix.x - tempf.x)
                         + POW2(center_pix.y - tempf.y)
                         + POW2(center_pix.z - tempf.z))
                     * preserve);
 
-                gaussian_weight =
-                    exp( - 0.5f * (POW2(u) + POW2(v)) / radius);
-
+                gaussian_weight = exp( - 0.5f * (POW2(u) + POW2(v)) / radius);
                 weight = diff_map * gaussian_weight;
 
                 accumulated += tempf * weight;
@@ -414,7 +413,6 @@ def bilateral_cl(pix, radius, preserve):
             }
         }
         write_imagef(output, (int2)(gidx,gidy), accumulated / count);
-        //write_imagef(output, (int2)(gidx,gidy), (float4)(1.0, 0.0, 1.0, 1.0));
     }
     """
     blr = cl_builder.build("bilateral", src, (cl.cl_float, cl.cl_float, cl.cl_image, cl.cl_image))
@@ -424,9 +422,71 @@ def bilateral_cl(pix, radius, preserve):
     return out.to_numpy()
 
 
-def median_filter(pix, s, picked="center"):
+def median_filter(pix, radius):
+    src = f"""
+    #define RADIUS {radius}
+    #define READP(x,y) read_imagef(input, sampler, (int2)(x, y))
+    kernel void wirth_median_{radius}(
+        __read_only image2d_t input,
+        __write_only image2d_t output)
+    {{
+        const int x = get_global_id(0);
+        const int y = get_global_id(1);
+        const sampler_t sampler = \
+            CLK_NORMALIZED_COORDS_FALSE |
+            CLK_ADDRESS_CLAMP_TO_EDGE |
+            CLK_FILTER_NEAREST;
 
-    return pix
+        float rcol[4] = {{0.0, 0.0, 0.0, 1.0}};
+        float a[RADIUS][RADIUS*RADIUS];
+
+        for (int m = 0; m < RADIUS; m++) {{
+            for (int n = 0; n < RADIUS; n++) {{
+                float4 ta = READP(x + n - (RADIUS / 2), y + m - (RADIUS / 2));
+                a[0][n+RADIUS*m] = ta.x;
+                a[1][n+RADIUS*m] = ta.y;
+                a[2][n+RADIUS*m] = ta.z;
+            }}
+        }}
+
+        for (int z=0; z<RADIUS; z++) {{
+            int k = (RADIUS*RADIUS)/2;
+            int n = (RADIUS*RADIUS);
+            int i,j,l,m;
+
+            float val;
+
+            l=0;
+            m=n-1;
+            while (l < m) {{
+                val = a[z][k];
+                i=l;
+                j=m;
+                do {{
+                    while (a[z][i] < val) i++;
+                    while (val < a[z][j]) j--;
+                    if (i<=j) {{
+                        float tmp = a[z][i];
+                        a[z][i] = a[z][j];
+                        a[z][j] = tmp;
+                        i++; j--;
+                    }}
+                }} while (i <= j);
+                if (j < k) l=i;
+                if (k < i) m=j;
+            }}
+
+            rcol[z] = a[z][k];
+        }}
+
+        write_imagef(output, (int2)(x, y), (float4)(rcol[0], rcol[1], rcol[2], 1.0f));
+    }}"""
+
+    k = cl_builder.build("wirth_median_" + repr(radius), src, (cl.cl_image, cl.cl_image))
+    img = cl_builder.new_image_from_numpy(pix)
+    out = cl_builder.new_image(img.width, img.height)
+    cl_builder.run_raw(k, [], (img,), out)
+    return out.to_numpy()
 
 
 def vectors_to_nmap(vectors, nmap):
@@ -505,7 +565,7 @@ def sharpen(pix, width, intensity):
     return pix
 
 
-def hi_pass(pix, s, intensity):
+def hi_pass(pix, s):
     bg = pix.copy()
     pix = (bg - gaussian_repeat(pix, s)) * 0.5 + 0.5
     pix[:, :, 3] = bg[:, :, 3]
@@ -887,10 +947,14 @@ def fill_alpha(image, style="black"):
         return image
 
 
-def dog(pix, a, b, mp):
-    pixb = pix.copy()
-    pix[..., :3] = np.abs(gaussian_repeat(pix, a) - gaussian_repeat(pixb, b))[..., :3]
-    pix[pix < mp][..., :3] = 0.0
+def dog(pix, a, b, threshold):
+    "Difference of Gaussians with a threshold"
+    size = max(a, b)
+    gpix = grayscale(pix)
+    res = (gaussian_repeat(gpix, a) - gaussian_repeat(gpix, b))[..., :3]
+    tt = threshold / size
+    # Xdog Winnemöller et al
+    pix[..., :3] = np.where(tt >= res, 1.0, 1.0 + np.tanh(40.0 * (tt - res)))
     return pix
 
 
@@ -1187,15 +1251,39 @@ class Sharpen_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: sharpen(image, self.width, self.intensity)
 
 
-class Sobel_IOP(image_ops.ImageOperatorGenerator):
+class DoG_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-        self.prefix = "sobel"
-        self.info = "Sobel"
-        self.category = "Filter"
-        self.payload = lambda self, image, context: normalize(
-            sobel(grayscale(image), 1.0), save_alpha=True
+        self.props["width_a"] = bpy.props.IntProperty(name="Width A", min=2, default=5)
+        self.props["width_b"] = bpy.props.IntProperty(name="Width B", min=2, default=4)
+        self.props["threshold"] = bpy.props.FloatProperty(
+            name="Threshold", min=0.0, max=1.0, default=0.01
         )
+        self.props["preserve"] = bpy.props.BoolProperty(name="Preserve", default=True)
+        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.prefix = "dog"
+        self.info = "DoG"
+        self.category = "Advanced"
+
+        def _pl(self, image, context):
+            t = image.copy()
+            d = dog(image, self.width_a, self.width_b, self.threshold)
+            if self.preserve:
+                return t * d
+            else:
+                return d
+
+        self.payload = _pl
+
+
+# class Sobel_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+#         self.prefix = "sobel"
+#         self.info = "Sobel"
+#         self.category = "Filter"
+#         self.payload = lambda self, image, context: normalize(
+#             sobel(grayscale(image), 1.0), save_alpha=True
+#         )
 
 
 class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
@@ -1212,7 +1300,7 @@ class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
 
 class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=20)
         # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "gaussian_blur"
         self.info = "Does a Gaussian blur"
@@ -1222,30 +1310,30 @@ class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
 
 class Median_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["style"] = bpy.props.EnumProperty(
-            name="Style",
+        # self.props["width"] = bpy.props.IntProperty(name="Width", min=3, max=9, default=3)
+        self.props["width"] = bpy.props.EnumProperty(
+            name="Width",
             items=[
-                ("start", "Erode", "", 1),
-                ("center", "Neutral", "", 2),
-                ("end", "Dilate", "", 3),
+                ("3", "3", "", 3),
+                ("5", "5", "", 5),
+                ("9", "9", "", 9),
+                ("15", "15 (crash your computer)", "", 15),
             ],
+            default="5"
         )
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
         self.prefix = "median_filter"
         self.info = "Median filter"
         self.category = "Filter"
-        self.payload = lambda self, image, context: median_filter(
-            image, self.width, picked=self.style
-        )
+        self.payload = lambda self, image, context: median_filter(image, int(self.width))
 
 
 class Bilateral_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["radius"] = bpy.props.FloatProperty(
-            name="Radius", min=0.01, max=100.0, default=3.0
+            name="Radius", min=0.01, max=100.0, default=10.0
         )
         self.props["preserve"] = bpy.props.FloatProperty(
-            name="Preserve", min=0.01, max=100.0, default=0.3
+            name="Preserve", min=0.01, max=100.0, default=20.0
         )
         self.prefix = "bilateral"
         self.info = "Bilateral"
@@ -1255,18 +1343,18 @@ class Bilateral_IOP(image_ops.ImageOperatorGenerator):
 
 class HiPass_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
-        self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=20)
+        # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "high_pass"
         self.info = "High pass"
         self.category = "Filter"
-        self.payload = lambda self, image, context: hi_pass(image, self.width, self.intensity)
+        self.payload = lambda self, image, context: hi_pass(image, self.width)
 
 
 class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=2)
-        self.props["zoom"] = bpy.props.IntProperty(name="Center slice", min=5, default=1000)
+        self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=50)
+        self.props["zoom"] = bpy.props.IntProperty(name="Center slice", min=5, default=200)
         self.prefix = "hipass_balance"
         self.info = "Remove low frequencies from the image"
         self.category = "Balance"
