@@ -45,30 +45,6 @@ def min_ptwo(val, pt):
     return ((val - 1) // pt + 1) * pt
 
 
-def image2d_to_ndarray(queue, buf, shape, out=None, like=None, **kw):
-    "See pycl.py for buffer_to_ndarray"
-    w, h = shape[0], shape[1]
-    out = np.empty((h, w, 4), dtype=np.float32)
-    assert out.flags.contiguous, "Don't know how to write non-contiguous yet."
-    # print(type(out), out.shape)
-    ptr = void_p(out.__array_interface__["data"][0])
-    # TODO: enforce x%8==0 pixel step
-    evt = cl.clEnqueueReadImage(queue, buf, ptr, (0, 0, 0), (w, h, 1), w * 4 * 4, 0, **kw)
-    return (out, evt)
-
-
-def image2d_from_ndarray(queue, ary, buf=None, **kw):
-    ary = np.ascontiguousarray(ary)
-    if ary.__array_interface__["strides"]:
-        raise ValueError("I don't know how to handle strided arrays yet.")
-    ptr = void_p(ary.__array_interface__["data"][0])
-    assert buf is not None
-    evt = cl.clEnqueueWriteImage(
-        queue, buf, ptr, (0, 0, 0), (ary.shape[1], ary.shape[0], 1), 0, 0, **kw
-    )
-    return (buf, evt)
-
-
 class CLImage:
     def __init__(self, cldev, w, h):
         self.cldev = cldev
@@ -78,13 +54,32 @@ class CLImage:
         # flags=self.cldev.mem_flags.CL_MEM_READ_WRITE,
 
     def from_numpy(self, source):
-        a_g, a_evt = image2d_from_ndarray(self.cldev.queue, source, buf=self.image)
-        a_evt.wait()
+        ary = np.ascontiguousarray(source)
+        if ary.__array_interface__["strides"]:
+            raise ValueError("I don't know how to handle strided arrays yet.")
+        ptr = void_p(ary.__array_interface__["data"][0])
+        evt = cl.clEnqueueWriteImage(
+            self.cldev.queue, self.image, ptr, (0, 0, 0), (ary.shape[1], ary.shape[0], 1), 0, 0
+        )
+        evt.wait()
 
     def to_numpy(self):
-        res_v, evt = image2d_to_ndarray(self.cldev.queue, self.image, (self.width, self.height, 4))
+        "See pycl.py for buffer_to_ndarray"
+        out = np.empty((self.height, self.width, 4), dtype=np.float32)
+        assert out.flags.contiguous, "Don't know how to write non-contiguous yet."
+        ptr = void_p(out.__array_interface__["data"][0])
+        # TODO: enforce x%8==0 pixel step
+        evt = cl.clEnqueueReadImage(
+            self.cldev.queue,
+            self.image,
+            ptr,
+            (0, 0, 0),
+            (self.width, self.height, 1),
+            self.width * 4 * 4,
+            0,
+        )
         evt.wait()
-        return res_v
+        return out
 
 
 class CLDev:
@@ -185,32 +180,17 @@ class CLDev:
     def run(self, kernel, params, inputs):
         "Run CL kernel on params. Multiple in, single out. Returns Numpy.float32 array."
         assert len(inputs) > 0
-
-        mf = self.mem_flags
-        imgf = self.image_format
-
         cl_inputs = []
+        # TODO: w, h is different between in and out images (do min_ptwo for both)
         w, h = inputs[0].shape[1], inputs[0].shape[0]
         for ip in inputs:
             # Only f32 and matching dimensions
             assert ip.dtype == np.float32
             assert ip.shape == inputs[0].shape
-            img_b = cl.clCreateImage2D(self.ctx, w, h, imgformat=imgf, flags=mf.CL_MEM_READ_ONLY)
-            a_g, a_evt = image2d_from_ndarray(self.queue, ip, buf=img_b)
-            a_evt.wait()
-            cl_inputs.append(a_g)
-
-        f_shape = (min_ptwo(w, 8), min_ptwo(h, 8))
-        res_g = cl.clCreateImage2D(self.ctx, w, h, imgformat=imgf, flags=mf.CL_MEM_WRITE_ONLY)
-
-        run_evt = kernel(*params, *cl_inputs, res_g).on(self.queue, gsize=f_shape, lsize=(8, 8))
-        res_v, evt = image2d_to_ndarray(self.queue, res_g, (w, h, 4), wait_for=run_evt)
-        evt.wait()
-
-        # print(np.max(res_v), np.min(res_v))
-        # return np.ones(inputs[0].shape, dtype=np.float32)
-
-        return res_v
+            cl_inputs.append(self.new_image_from_numpy(ip))
+        out = cl_builder.new_image(w, h)
+        cl_builder.run_raw(kernel, params, cl_inputs, out)
+        return out.to_numpy()
 
     def run_raw(self, kernel, params, inputs, output, shape=None):
         "Run CL kernel on params. Multiple in, single out. CLImage buffers."
@@ -449,6 +429,7 @@ def median_filter(pix, radius):
             }}
         }}
 
+        // Wirth median
         for (int z=0; z<RADIUS; z++) {{
             int k = (RADIUS*RADIUS)/2;
             int n = (RADIUS*RADIUS);
@@ -496,13 +477,6 @@ def vectors_to_nmap(vectors, nmap):
     nmap[:, :, 2] = vectors[:, :, 2] + 0.5
 
 
-def explicit_cross(a, b):
-    x = a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1]
-    y = a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2]
-    z = a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
-    return np.dstack([x, y, z])
-
-
 def nmap_to_vectors(nmap):
     vectors = np.empty((nmap.shape[0], nmap.shape[1], 3), dtype=np.float32)
     vectors[..., 0] = nmap[..., 0] - 0.5
@@ -510,21 +484,6 @@ def nmap_to_vectors(nmap):
     vectors[..., 2] = nmap[..., 2] - 0.5
     vectors *= 2.0
     return vectors
-
-
-def neighbour_average(ig):
-    return (ig[1:-1, :-2] + ig[1:-1, 2:] + ig[:-2, 1:-1] + ig[:-2, 1:-1]) * 0.25
-
-
-def convolution(ssp, intens, sfil):
-    # source, intensity, convolution matrix
-    tpx = np.zeros(ssp.shape, dtype=float)
-    ysz, xsz = sfil.shape[0], sfil.shape[1]
-    ystep = int(4 * ssp.shape[1])
-    for y in range(ysz):
-        for x in range(xsz):
-            tpx += np.roll(ssp, (x - xsz // 2) * 4 + (y - ysz // 2) * ystep) * sfil[y, x]
-    return tpx
 
 
 def normalize(pix, save_alpha=False):
@@ -537,27 +496,7 @@ def normalize(pix, save_alpha=False):
     return t
 
 
-def sobel_x(pix, intensity):
-    gx = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])
-    return convolution(pix, intensity, gx)
-
-
-def sobel_y(pix, intensity):
-    gy = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
-    return convolution(pix, intensity, gy)
-
-
-def sobel(pix, intensity):
-    retarr = np.zeros(pix.shape)
-    retarr = sobel_x(pix, 1.0)
-    retarr += sobel_y(pix, 1.0)
-    retarr = (retarr * intensity) * 0.5 + 0.5
-    retarr[..., 3] = pix[..., 3]
-    return retarr
-
-
 def sharpen(pix, width, intensity):
-    # return convolution(pix, intensity, np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]]))
     A = pix[..., 3]
     gas = gaussian_repeat(pix, width)
     pix += (pix - gas) * intensity
@@ -615,6 +554,7 @@ def hist_match(source, template):
 
 
 def gaussianize(source, NG=1000):
+    "Make histogram into gaussian, save transform"
     oldshape = source.shape
     output = source.copy()
     transforms = []
@@ -644,6 +584,7 @@ def gaussianize(source, NG=1000):
 
 
 def degaussianize(source, transforms):
+    "Make a Gaussianized histogram back to the original using the transform"
     oldshape = source.shape
     output = source.copy()
 
@@ -660,17 +601,6 @@ def degaussianize(source, transforms):
         output[..., i] = tv.reshape(oldshape[:2])
 
     return output
-
-
-def cumulative_distribution(data, bins):
-    assert np.min(data) >= 0.0 and np.max(data) <= 1.0
-    hg_av, hg_a = np.unique(np.floor(data * (bins - 1)), return_index=True)
-    hg_a = np.float32(hg_a)
-    hgs = np.sum(hg_a)
-    hg_a /= hgs
-    res = np.zeros((bins,))
-    res[np.int64(hg_av)] = hg_a
-    return np.cumsum(res)
 
 
 def hi_pass_balance(pix, s, zoom):
@@ -713,40 +643,45 @@ def hgram_equalize(pix, intensity, atest):
 def normals_simple(pix, source):
     pix = grayscale(pix)
     pix = normalize(pix)
-    sshape = pix.shape
 
-    # extract x and y deltas
-    px = sobel_x(pix, 1.0)
-    px[:, :, 2] = px[:, :, 2]
-    px[:, :, 1] = 0
-    px[:, :, 0] = 1
+    radius = 5
 
-    py = sobel_y(pix, 1.0)
-    py[:, :, 2] = py[:, :, 2]
-    py[:, :, 1] = 1
-    py[:, :, 0] = 0
+    src = """
+    #define READP(x,y) read_imagef(input, sampler, (int2)(x, y))
+    kernel void height_to_normals(
+        const int radius,
+        __read_only image2d_t input,
+        __write_only image2d_t output
+    )
+    {
+        int x = get_global_id(0);
+        int y = get_global_id(1);
+        const sampler_t sampler = \
+            CLK_NORMALIZED_COORDS_FALSE |
+            CLK_ADDRESS_CLAMP_TO_EDGE |
+            CLK_FILTER_NEAREST;
 
-    # normalize
-    # dv = max(abs(np.min(curve)), abs(np.max(curve)))
-    # curve /= dv
+        float4 pix = read_imagef(input, sampler, (int2)(x, y));
 
-    # find the imagined approximate surface normal
-    # arr = np.cross(px[:, :, :3], py[:, :, :3])
-    arr = explicit_cross(px[:, :, :3], py[:, :, :3])
-    print(arr.shape)
+        float x_comp = READP(x-1, y).x - READP(x+1, y).x;
+        float y_comp = READP(x, y-1).x - READP(x, y+1).x;
 
-    # normalization: vec *= 1/len(vec)
-    m = 1.0 / np.sqrt(arr[:, :, 0] ** 2 + arr[:, :, 1] ** 2 + arr[:, :, 2] ** 2)
-    arr[..., 0] *= m
-    arr[..., 1] *= m
-    arr[..., 2] *= m
-    arr[..., 0] = -arr[..., 0]
+        float3 v = (float3)(x_comp, y_comp, 0.1f);
+        v = v/length(v)/2.0f;
 
-    # normals format
-    retarr = np.zeros(sshape)
-    vectors_to_nmap(arr, retarr)
-    retarr[:, :, 3] = pix[..., 3]
-    return retarr
+        float4 out = (float4)(1.0f);
+        out.x = v.x + 0.5;
+        out.y = v.y + 0.5;
+        out.z = v.z + 0.5;
+
+        write_imagef(output, (int2)(x,y), out);
+    }
+    """
+    blr = cl_builder.build("height_to_normals", src, (cl.cl_int, cl.cl_image, cl.cl_image))
+    img = cl_builder.new_image_from_numpy(pix)
+    out = cl_builder.new_image(img.width, img.height)
+    cl_builder.run_raw(blr, [radius], (img,), out)
+    return out.to_numpy()
 
 
 def normals_to_curvature(pix):
@@ -879,56 +814,6 @@ def normals_to_height(image, grid_steps, iterations=2000, intensity=1.0):
     u -= np.min(u)
     u /= np.max(u)
 
-    return np.dstack([u, u, u, image[..., 3]])
-
-
-def delight_simple(image, dd, iterations=500):
-    A = image[..., 3]
-    u = np.ones_like(image[..., 0])
-
-    grads = np.zeros((image.shape[0], image.shape[1], 2), dtype=np.float32)
-    grads[..., 0] = (np.roll(image[..., 0], 1, axis=0) - image[..., 0]) * dd
-    grads[..., 1] = (image[..., 0] - np.roll(image[..., 0], 1, axis=1)) * dd
-    # grads[..., 0] = (image[..., 0] - 0.5) * (dd)
-    # grads[..., 1] = (image[..., 0] - 0.5) * (dd)
-    for k in range(5, -1, -1):
-        # multigrid
-        k = 2 ** k
-        print("grid step:", k)
-
-        n = np.roll(grads[..., 0], k, axis=1)
-        n -= np.roll(grads[..., 0], -k, axis=1)
-        n += np.roll(grads[..., 1], k, axis=0)
-        n -= np.roll(grads[..., 1], -k, axis=0)
-        n *= 0.125 * image[..., 3]
-
-        for ic in range(iterations):
-            if ic % 100 == 0:
-                print(ic)
-            t = np.roll(u, -k, axis=0)
-            t += np.roll(u, k, axis=0)
-            t += np.roll(u, -k, axis=1)
-            t += np.roll(u, k, axis=1)
-            t *= 0.25
-
-            # zero alpha = zero height
-            u = t + n
-            u = u * A + np.max(u) * (1 - A)
-
-    u = -u
-    u -= np.min(u)
-    u /= np.max(u)
-
-    # u *= image[..., 3]
-
-    # u -= np.mean(u)
-    # u /= max(abs(np.min(u)), abs(np.max(u)))
-    # u *= 0.5
-    # u += 0.5
-    # u = 1.0 - u
-
-    # return np.dstack([(u - image[..., 0]) * 0.5 + 0.5, u, u, image[..., 3]])
-    u = (image[..., 0] - u) * 0.5 + 0.5
     return np.dstack([u, u, u, image[..., 3]])
 
 
@@ -1187,7 +1072,7 @@ class CropToP2_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "crop_to_power"
         self.info = "Crops the middle of the image to power of twos"
-        self.category = "Basic"
+        self.category = "Dimensions"
 
         def _pl(self, image, context):
             h, w = image.shape[0], image.shape[1]
@@ -1217,7 +1102,7 @@ class CropToSquare_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "crop_to_square"
         self.info = "Crop the middle to square with two divisible height and width"
-        self.category = "Basic"
+        self.category = "Dimensions"
 
         def _pl(self, image, context):
             h, w = image.shape[0], image.shape[1]
@@ -1275,17 +1160,6 @@ class DoG_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
-# class Sobel_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
-#         self.prefix = "sobel"
-#         self.info = "Sobel"
-#         self.category = "Filter"
-#         self.payload = lambda self, image, context: normalize(
-#             sobel(grayscale(image), 1.0), save_alpha=True
-#         )
-
-
 class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["style"] = bpy.props.EnumProperty(
@@ -1319,7 +1193,7 @@ class Median_IOP(image_ops.ImageOperatorGenerator):
                 ("9", "9", "", 9),
                 ("15", "15 (crash your computer)", "", 15),
             ],
-            default="5"
+            default="5",
         )
         self.prefix = "median_filter"
         self.info = "Median filter"
