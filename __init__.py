@@ -26,11 +26,12 @@ bl_info = {
     "blender": (2, 81, 0),
 }
 
-import bpy
+import bpy  # noqa
 import functools
 import numpy as np
 from . import pycl as cl
 from ctypes import c_void_p as void_p
+from typing import NewType
 
 from . import image_ops
 import importlib
@@ -80,6 +81,22 @@ class CLImage:
         )
         evt.wait()
         return out
+
+
+CLFloat = NewType("CLFloat", float)
+CLInt = NewType("CLInt", int)
+
+
+class CLFloatArray:
+    def __init__(self, a):
+        assert a.dtype == np.float32
+        self.data = a
+
+
+class CLIntArray:
+    def __init__(self, a):
+        assert a.dtype == np.int32
+        self.data = a
 
 
 class CLDev:
@@ -202,64 +219,105 @@ class CLDev:
         )
         run_evt.wait()
 
+    def run_raw_buffer(self, kernel, params, output, shape=None):
+        "Run CL kernel on params. Multiple in, single out. Generic buffers."
+        assert shape is not None
+        f_shape = (min_ptwo(shape[1], 8), min_ptwo(shape[0], 8))
+        run_evt = kernel(*params, output).on(self.queue, gsize=f_shape, lsize=(8, 8))
+        run_evt.wait()
+
     def to_buffer(self, narray):
         gc_c, gc_e = cl.buffer_from_ndarray(self.queue, narray)
         gc_e.wait()
         return gc_c
 
+    def image_kernel(self, input_func):
+        """ Builds a OpenCL kernel and a Python function to run it """
+
+        # TBD:  figure out if this is even a smart idea
+
+        cl_types = {
+            "CLFloat": ("const float", cl.cl_float),
+            "CLInt": ("const int", cl.cl_int),
+            "CLFloatArray": ("const __global float*", cl.cl_mem),
+            "CLIntArray": ("const __global int*", cl.cl_mem),
+            "CLImage": ("__read_only image2d_t", cl.cl_image),
+        }
+
+        # parse input func
+        params = {}
+        for i in input_func.__annotations__.items():
+            params[i[0]] = i[1]
+
+        source = input_func(*([None] * len(params)))
+
+        sampler = """
+        const sampler_t sampler = \\
+            CLK_NORMALIZED_COORDS_FALSE |
+            CLK_ADDRESS_CLAMP_TO_EDGE |
+            CLK_FILTER_NEAREST;
+        const int gx = get_global_id(0), gy = get_global_id(1);
+        const int2 loc = (int2)(gx, gy);
+        const int width = get_image_width(output), height = get_image_height(output);
+        """
+
+        pstr = []
+        iparams = []
+        for p in params.items():
+            pname = p[1].__name__
+            assert pname in cl_types
+
+            pstr.append(cl_types[pname][0] + " " + p[0])
+            pstr.append(",\n")
+
+            iparams.append(cl_types[pname][1])
+        pstr.append("__write_only image2d_t output")
+        iparams = tuple(iparams)
+
+        src = f"""
+        #define READP(input,loc) read_imagef(input, sampler, loc)
+        __kernel void {input_func.__name__}(
+            {"".join(pstr)})
+        {{
+            float4 out;
+            {sampler}
+            {source}
+            write_imagef(output, loc, out);
+        }}
+        """
+
+        print(src)
+
+        # new_kernel = cl_builder.build(
+        #     name,
+        #     f"""
+        #     __kernel void {name}(
+        #         const int s,
+        #         const __global float *gc,
+        #         __read_only image2d_t input,
+        #         __write_only image2d_t output)
+        #     {{
+        #         {sampler}
+        #         {source}
+        #         write_imagef(output, (int2)(x,y), out);
+        #     }}
+        #     """,
+        #     (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image),
+        # )
+
+        return None
+
 
 cl_builder = CLDev()
 
 
-class BTT_AddonPreferences(bpy.types.AddonPreferences):
-    bl_idname = __name__
-
-    def draw(self, context):
-
-        # if CUDA_ACTIVE is False:
-        #     info_text = (
-        #         "The button below should automatically install required CUDA libs.\n"
-        #         "You need to run the reload scripts command in Blender to activate the\n"
-        #         " functionality after the installation finishes, or restart Blender."
-        #     )
-        #     col = self.layout.box().column(align=True)
-        #     for l in info_text.split("\n"):
-        #         row = col.row()
-        #         row.label(text=l)
-        #     # col.separator()
-        #     row = self.layout.row()
-        #     row.operator(BTT_InstallLibraries.bl_idname, text="Install CUDA acceleration library")
-        # else:
-        row = self.layout.row()
-        row.label(text="All optional libraries installed")
-
-
-def grayscale_cl_array(ssp):
-    src = """
-    __kernel void grayscale(
-        const int WIDTH,
-        __global const float4 *A,
-        __global const float4 *B,
-        __global float4 *output)
-    {
-        int i = get_global_id(0);
-        int j = get_global_id(1);
-        int loc = i + j*WIDTH;
-
-        float g = A[loc].x * 0.2989 + A[loc].y * 0.5870 + A[loc].z * 0.1140;
-
-        output[loc].x = g;
-        output[loc].y = g;
-        output[loc].z = g;
-        output[loc].w = A[loc].w;
-    }
-    """
-
-    k = cl_builder.build("grayscale", src, (cl.cl_int, cl.cl_mem, cl.cl_mem, cl.cl_mem))
-    res = cl_builder.run(k, (ssp.shape[0],), (ssp, ssp))
-    # print(type(res), res.dtype, res.shape, np.max(res), np.min(res))
-    # res = np.ones(ssp.shape, dtype=np.float32)
-    return res
+# @cl_builder.image_kernel
+# def gtscale(vee: CLInt, fio: CLImage):
+#     return """
+#     float4 px = READP(input, loc);
+#     float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
+#     out = ((float4)(g, g, g, px.w));
+#     """
 
 
 def grayscale(ssp):
@@ -486,7 +544,107 @@ def nmap_to_vectors(nmap):
     return vectors
 
 
+def linear_to_srgb(c, clamp=True):
+    "linear sRGB to sRGB"
+    assert c.dtype == np.float32
+    srgb = np.where(c < 0.0031308, c * 12.92, 1.055 * np.pow(c, 1.0 / 2.4) - 0.055)
+    if clamp:
+        srgb[srgb > 1.0] = 1.0
+        srgb[srgb < 0.0] = 0.0
+    return srgb
+
+
+def srgb_to_linear(c):
+    "sRGB to linear sRGB"
+    assert c.dtype == np.float32
+    return np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+
+
+def rgb2hsv(image):
+    # TODO: finish this
+    tmp = image[:, :, :3]
+    r = tmp[:, :, 0]
+    g = tmp[:, :, 1]
+    b = tmp[:, :, 2]
+
+    acmax = tmp.argmax(2)
+    cmax = tmp.max(2)
+    cmin = tmp.min(2)
+    delta = cmax - cmin
+
+    # R G B = 0 1 2
+    dnzero = delta == 0.0
+    hr = np.where((acmax == 0) & dnzero, ((g - b) / delta) % 6.0, 0.0)
+    hg = np.where((acmax == 1) & dnzero, (b - r) / delta + 2.0, 0.0)
+    hb = np.where((acmax == 2) & dnzero, (r - g) / delta + 4.0, 0.0)
+
+    H = np.where(cmax == cmin, 0.0, (hr + hg + hb) / 6.0)
+    H[H < 0.0] += 1.0
+
+    L = cmax
+    St = cmax <= 0.0001
+    cmax[St] = 1.0
+    S = np.where(St, 0.0, (cmax - cmin) / cmax)
+
+    return np.dstack([H, S, L])
+
+
+if False:
+    True
+    # function rgb2hue(r, g, b) {
+    #   r /= 255;
+    #   g /= 255;
+    #   b /= 255;
+    #   var max = Math.max(r, g, b);
+    #   var min = Math.min(r, g, b);
+    #   var c   = max - min;
+    #   var hue;
+    #   if (c == 0) {
+    #     hue = 0;
+    #   } else {
+    #     switch(max) {
+    #       case r:
+    #         var segment = (g - b) / c;
+    #         var shift   = 0 / 60;       // R° / (360° / hex sides)
+    #         if (segment < 0) {          // hue > 180, full rotation
+    #           shift = 360 / 60;         // R° / (360° / hex sides)
+    #         }
+    #         hue = segment + shift;
+    #         break;
+    #       case g:
+    #         var segment = (b - r) / c;
+    #         var shift   = 120 / 60;     // G° / (360° / hex sides)
+    #         hue = segment + shift;
+    #         break;
+    #       case b:
+    #         var segment = (r - g) / c;
+    #         var shift   = 240 / 60;     // B° / (360° / hex sides)
+    #         hue = segment + shift;
+    #         break;
+    #     }
+    #   }
+    #   return hue * 60; // hue is in [0,6], scale it up
+    # }
+
+    # void YUVfromRGB(double& Y, double& U, double& V, const double R, const double G, const double B)
+    # {
+    #   Y =  0.257 * R + 0.504 * G + 0.098 * B +  16;
+    #   U = -0.148 * R - 0.291 * G + 0.439 * B + 128;
+    #   V =  0.439 * R - 0.368 * G - 0.071 * B + 128;
+    # }
+    # void RGBfromYUV(double& R, double& G, double& B, double Y, double U, double V)
+    # {
+    #   Y -= 16;
+    #   U -= 128;
+    #   V -= 128;
+    #   R = 1.164 * Y             + 1.596 * V;
+    #   G = 1.164 * Y - 0.392 * U - 0.813 * V;
+    #   B = 1.164 * Y + 2.017 * U;
+    # }
+
+
 def normalize(pix, save_alpha=False):
+    # TODO: HSL or Lab lightness normalization, maintain chroma
     if save_alpha:
         A = pix[..., 3]
     t = pix - np.min(pix)
@@ -644,12 +802,14 @@ def normals_simple(pix, source):
     pix = grayscale(pix)
     pix = normalize(pix)
 
-    radius = 5
+    steepness = 1.0
+
+    # TODO: better vector calc, not just side pixels
 
     src = """
     #define READP(x,y) read_imagef(input, sampler, (int2)(x, y))
     kernel void height_to_normals(
-        const int radius,
+        const float steepness,
         __read_only image2d_t input,
         __write_only image2d_t output
     )
@@ -666,21 +826,18 @@ def normals_simple(pix, source):
         float x_comp = READP(x-1, y).x - READP(x+1, y).x;
         float y_comp = READP(x, y-1).x - READP(x, y+1).x;
 
-        float3 v = (float3)(x_comp, y_comp, 0.1f);
+        float3 v = (float3)(x_comp, y_comp, 1.0f/steepness);
         v = v/length(v)/2.0f;
 
-        float4 out = (float4)(1.0f);
-        out.x = v.x + 0.5;
-        out.y = v.y + 0.5;
-        out.z = v.z + 0.5;
-
+        float4 out = (float4)(v.x + 0.5, v.y + 0.5, v.z + 0.5, 1.0f);
         write_imagef(output, (int2)(x,y), out);
     }
     """
-    blr = cl_builder.build("height_to_normals", src, (cl.cl_int, cl.cl_image, cl.cl_image))
+    blr = cl_builder.build("height_to_normals", src, (cl.cl_float, cl.cl_image, cl.cl_image))
     img = cl_builder.new_image_from_numpy(pix)
     out = cl_builder.new_image(img.width, img.height)
-    cl_builder.run_raw(blr, [radius], (img,), out)
+    assert steepness != 0.0
+    cl_builder.run_raw(blr, [steepness], (img,), out)
     return out.to_numpy()
 
 
@@ -727,36 +884,59 @@ def normals_to_curvature(pix):
     return pix
 
 
+def gauss_seidel_cl(w, h, h2, target, inp, outp):
+    src = """
+    __kernel void curvature_to_height(
+        const int i_width,
+        const int i_height,
+        const float step,
+        __global const float *input,
+        __global const float *target,
+        __global float *output
+    )
+    {
+        int x = get_global_id(0);
+        int y = get_global_id(1);
+        int loc = x + y * i_width;
+
+        float t = 0.0f;
+
+        t += x > 0 ? input[loc-1] : input[loc+(i_width-1)];
+        t += y > 0 ? input[loc-i_width] : input[loc+(i_height-1)*i_width];
+
+        t += x < i_width-1 ? input[loc+1] : input[loc-(i_width-1)];
+        t += y < i_height-1 ? input[loc+i_width] : input[loc-(i_height-1)*i_width];
+
+        t *= 0.25;
+        t -= step * target[loc];
+        output[loc] = t;
+    }
+    """
+    cth = cl_builder.build(
+        "curvature_to_height",
+        src,
+        (cl.cl_int, cl.cl_int, cl.cl_float, cl.cl_mem, cl.cl_mem, cl.cl_mem),
+    )
+    cl_builder.run_raw_buffer(cth, [w, h, h2, inp, target], outp, shape=(h, w))
+
+
 def curvature_to_height(image, h2, iterations=2000):
-    f = image[..., 0]
-    A = image[..., 3]
-    u = np.ones_like(f) * 0.5
+    target = image[..., 0]
 
-    k = 1
-    t = np.empty_like(u, dtype=np.float32)
+    w, h = target.shape[1], target.shape[0]
+    f = cl_builder.to_buffer(target)
 
-    # periodic gauss seidel iteration
+    ping = cl_builder.to_buffer(np.ones_like(target) * 0.5)
+    pong = cl_builder.to_buffer(np.zeros_like(target))
+
     for ic in range(iterations):
-        if ic % 100 == 0:
-            print(ic)
+        gauss_seidel_cl(w, h, h2, f, ping, pong)
+        gauss_seidel_cl(w, h, h2, f, pong, ping)
 
-        # roll k, axis=0
-        t[:-k, :] = u[k:, :]
-        t[-k:, :] = u[:k, :]
-        # roll -k, axis=0
-        t[k:, :] += u[:-k, :]
-        t[:k, :] += u[-k:, :]
-        # roll k, axis=1
-        t[:, :-k] += u[:, k:]
-        t[:, -k:] += u[:, :k]
-        # roll -k, axis=1
-        t[:, k:] += u[:, :-k]
-        t[:, :k] += u[:, -k:]
+    res_v, evt = cl.buffer_to_ndarray(cl_builder.queue, ping, like=image[..., 0])
+    evt.wait()
 
-        t -= h2 * f
-        t *= 0.25
-        u = t * A
-
+    u = res_v
     u = -u
     u -= np.min(u)
     u /= np.max(u)
@@ -764,53 +944,30 @@ def curvature_to_height(image, h2, iterations=2000):
     return np.dstack([u, u, u, image[..., 3]])
 
 
-def normals_to_height(image, grid_steps, iterations=2000, intensity=1.0):
-    # A = image[..., 3]
-    ih, iw = image.shape[0], image.shape[1]
-    u = np.ones((ih, iw), dtype=np.float32) * 0.5
-
+def normals_to_height(image, iterations=2000, intensity=1.0):
     vectors = nmap_to_vectors(image)
-    # vectors[..., 0] = 0.5 - image[..., 0]
-    # vectors[..., 1] = image[..., 1] - 0.5
-
     vectors *= intensity
 
-    t = np.empty_like(u, dtype=np.float32)
+    target = np.roll(vectors[..., 0], 1, axis=1)
+    target -= np.roll(vectors[..., 0], -1, axis=1)
+    target += np.roll(vectors[..., 1], 1, axis=0)
+    target -= np.roll(vectors[..., 1], -1, axis=0)
+    target *= 0.125
 
-    for k in range(grid_steps, -1, -1):
-        # multigrid
-        k = 2 ** k
-        print("grid step:", k)
+    w, h = target.shape[1], target.shape[0]
+    f = cl_builder.to_buffer(target)
 
-        n = np.roll(vectors[..., 0], k, axis=1)
-        n -= np.roll(vectors[..., 0], -k, axis=1)
-        n += np.roll(vectors[..., 1], k, axis=0)
-        n -= np.roll(vectors[..., 1], -k, axis=0)
-        n *= 0.125
+    ping = cl_builder.to_buffer(np.ones_like(target) * 0.5)
+    pong = cl_builder.to_buffer(np.zeros_like(target))
 
-        for ic in range(iterations):
-            if ic % 100 == 0:
-                print(ic)
+    for ic in range(iterations):
+        gauss_seidel_cl(w, h, 1.0, f, ping, pong)
+        gauss_seidel_cl(w, h, 1.0, f, pong, ping)
 
-            # roll k, axis=0
-            t[:-k, :] = u[k:, :]
-            t[-k:, :] = u[:k, :]
-            # roll -k, axis=0
-            t[k:, :] += u[:-k, :]
-            t[:k, :] += u[-k:, :]
-            # roll k, axis=1
-            t[:, :-k] += u[:, k:]
-            t[:, -k:] += u[:, :k]
-            # roll -k, axis=1
-            t[:, k:] += u[:, :-k]
-            t[:, :k] += u[:, -k:]
+    res_v, evt = cl.buffer_to_ndarray(cl_builder.queue, ping, like=image[..., 0])
+    evt.wait()
 
-            t *= 0.25
-            u = t + n
-            # zero alpha = zero height
-            # u = u * A + np.max(u) * (1 - A)
-
-    u = -u
+    u = res_v
     u -= np.min(u)
     u /= np.max(u)
 
@@ -1030,27 +1187,27 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
-class TestPattern_IOP(image_ops.ImageOperatorGenerator):
-    def generate(self):
-        # self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
-        # self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
-        # self.props["direction"] = bpy.props.EnumProperty(
-        #     name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
-        # )
-        self.prefix = "test_pattern"
-        self.info = "Test pattern"
-        self.category = "Basic"
+# class TestPattern_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         # self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
+#         # self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
+#         # self.props["direction"] = bpy.props.EnumProperty(
+#         #     name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
+#         # )
+#         self.prefix = "test_pattern"
+#         self.info = "Test pattern"
+#         self.category = "Basic"
 
-        def _pl(self, image, context):
-            # RED
-            image[:, 90:100, 0] = 1.0
+#         def _pl(self, image, context):
+#             # RED
+#             image[:, 90:100, 0] = 1.0
 
-            # GREEN
-            image[90:100, :, 1] = 1.0
+#             # GREEN
+#             image[90:100, :, 1] = 1.0
 
-            return image
+#             return image
 
-        self.payload = _pl
+#         self.payload = _pl
 
 
 class Normalize_IOP(image_ops.ImageOperatorGenerator):
@@ -1315,10 +1472,6 @@ class HistogramSeamless_IOP(image_ops.ImageOperatorGenerator):
 
 class Normals_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        # self.props["source"] = bpy.props.EnumProperty(
-        #     name="Source", items=[("LUMINANCE", "Luminance", "", 1), ("SOBEL", "Sobel", "", 2)]
-        # )
-        # self.props["width"] = bpy.props.IntProperty(name="Width", min=0, default=2)
         # self.props["intensity"] = bpy.props.FloatProperty(name="Intensity", min=0.0, default=1.0)
         self.prefix = "height_to_normals"
         self.info = "(Very rough estimate) normal map from RGB"
@@ -1354,26 +1507,14 @@ class CurveToHeight_IOP(image_ops.ImageOperatorGenerator):
 
 class NormalsToHeight_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["grid"] = bpy.props.IntProperty(name="Grid subd", min=1, default=4)
+        # self.props["grid"] = bpy.props.IntProperty(name="Grid subd", min=1, default=4)
         self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
         self.prefix = "normals_to_height"
         self.info = "Normals to height"
         self.category = "Normals"
         self.payload = lambda self, image, context: normals_to_height(
-            image, self.grid, iterations=self.iterations
+            image, iterations=self.iterations
         )
-
-
-# class Delight_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.props["flip"] = bpy.props.BoolProperty(name="Flip direction", default=False)
-#         self.props["iterations"] = bpy.props.IntProperty(name="Iterations", min=10, default=200)
-#         self.prefix = "delighting"
-#         self.info = "Delight simple"
-#         self.category = "Normals"
-#         self.payload = lambda self, image, context: delight_simple(
-#             image, -1 if self.flip else 1, iterations=self.iterations
-#         )
 
 
 class InpaintTangents_IOP(image_ops.ImageOperatorGenerator):
@@ -1405,28 +1546,7 @@ class NormalizeTangents_IOP(image_ops.ImageOperatorGenerator):
 #         self.payload = lambda self, image, context: image_to_material(image)
 
 
-# class DoG_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.props["a"] = bpy.props.IntProperty(name="Width A", min=1, default=20)
-#         self.props["b"] = bpy.props.IntProperty(name="Width B", min=1, default=100)
-#         self.props["mp"] = bpy.props.FloatProperty(name="Treshold", min=0.0, default=1.0)
-#         self.prefix = "dog"
-#         self.info = "Difference of gaussians"
-#         self.category = "Filter"
-#         self.payload = lambda self, image, context: dog(image, self.a, self.b, self.mp)
-
-# class LaplacianBlend_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.prefix = "laplacian_blend"
-#         self.info = "Blends two images with Laplacian pyramids"
-#         self.category = "Filter"
-
-#         def _pl(self, image, context):
-#             return image
-
-#         self.payload = _pl
-
 # additional_classes = [BTT_InstallLibraries, BTT_AddonPreferences]
-additional_classes = [BTT_AddonPreferences]
+additional_classes = []
 
 register, unregister = image_ops.create(locals(), additional_classes)
