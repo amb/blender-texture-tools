@@ -51,8 +51,8 @@ class CLImage:
         self.cldev = cldev
         self.width = w
         self.height = h
+        # Default memflags are CL_MEM_READ_WRITE
         self.image = cl.clCreateImage2D(cldev.ctx, w, h, imgformat=cldev.image_format)
-        # flags=self.cldev.mem_flags.CL_MEM_READ_WRITE,
 
     def from_numpy(self, source):
         ary = np.ascontiguousarray(source)
@@ -231,11 +231,7 @@ class CLDev:
         gc_e.wait()
         return gc_c
 
-    def image_kernel(self, input_func):
-        """ Builds a OpenCL kernel and a Python function to run it """
-
-        # TBD:  figure out if this is even a smart idea
-
+    def _decorator_builder(self, input_func, seamless=False):
         cl_types = {
             "CLFloat": ("const float", cl.cl_float),
             "CLInt": ("const int", cl.cl_int),
@@ -251,16 +247,6 @@ class CLDev:
 
         source = input_func(*([None] * len(params)))
 
-        sampler = """
-        const sampler_t sampler = \\
-            CLK_NORMALIZED_COORDS_FALSE |
-            CLK_ADDRESS_CLAMP_TO_EDGE |
-            CLK_FILTER_NEAREST;
-        const int gx = get_global_id(0), gy = get_global_id(1);
-        const int2 loc = (int2)(gx, gy);
-        const int width = get_image_width(output), height = get_image_height(output);
-        """
-
         pstr = []
         iparams = []
         for p in params.items():
@@ -273,6 +259,16 @@ class CLDev:
             iparams.append(cl_types[pname][1])
         pstr.append("__write_only image2d_t output")
         iparams = tuple(iparams)
+
+        sampler = """
+        const sampler_t sampler = \\
+            CLK_NORMALIZED_COORDS_FALSE |
+            CLK_ADDRESS_CLAMP_TO_EDGE |
+            CLK_FILTER_NEAREST;
+        const int gx = get_global_id(0), gy = get_global_id(1);
+        const int2 loc = (int2)(gx, gy);
+        const int width = get_image_width(output), height = get_image_height(output);
+        """
 
         src = f"""
         #define READP(input,loc) read_imagef(input, sampler, loc)
@@ -304,6 +300,15 @@ class CLDev:
         #     """,
         #     (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image),
         # )
+
+        return None
+
+    def image_kernel(self, input_func):
+        """ Builds a OpenCL kernel and a Python function to run it """
+
+        # TBD:  figure out if this is even a smart idea
+
+        # self._decorator_builder(input_func)
 
         return None
 
@@ -340,6 +345,22 @@ def grayscale(ssp):
 
     k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image))
     return cl_builder.run(k, [], (ssp,))
+
+
+def linear_to_srgb(c, clamp=True):
+    "linear sRGB to sRGB"
+    assert c.dtype == np.float32
+    srgb = np.where(c < 0.0031308, c * 12.92, 1.055 * np.pow(c, 1.0 / 2.4) - 0.055)
+    if clamp:
+        srgb[srgb > 1.0] = 1.0
+        srgb[srgb < 0.0] = 0.0
+    return srgb
+
+
+def srgb_to_linear(c):
+    "sRGB to linear sRGB"
+    assert c.dtype == np.float32
+    return np.where(c >= 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
 
 
 @functools.lru_cache(maxsize=128)
@@ -546,51 +567,6 @@ def nmap_to_vectors(nmap):
     vectors *= 2.0
     vectors[..., 3] = 1.0
     return vectors
-
-
-def linear_to_srgb(c, clamp=True):
-    "linear sRGB to sRGB"
-    assert c.dtype == np.float32
-    srgb = np.where(c < 0.0031308, c * 12.92, 1.055 * np.pow(c, 1.0 / 2.4) - 0.055)
-    if clamp:
-        srgb[srgb > 1.0] = 1.0
-        srgb[srgb < 0.0] = 0.0
-    return srgb
-
-
-def srgb_to_linear(c):
-    "sRGB to linear sRGB"
-    assert c.dtype == np.float32
-    return np.where(c >= 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
-
-
-def rgb2hsv(image):
-    # TODO: finish this
-    tmp = image[:, :, :3]
-    r = tmp[:, :, 0]
-    g = tmp[:, :, 1]
-    b = tmp[:, :, 2]
-
-    acmax = tmp.argmax(2)
-    cmax = tmp.max(2)
-    cmin = tmp.min(2)
-    delta = cmax - cmin
-
-    # R G B = 0 1 2
-    dnzero = delta == 0.0
-    hr = np.where((acmax == 0) & dnzero, ((g - b) / delta) % 6.0, 0.0)
-    hg = np.where((acmax == 1) & dnzero, (b - r) / delta + 2.0, 0.0)
-    hb = np.where((acmax == 2) & dnzero, (r - g) / delta + 4.0, 0.0)
-
-    H = np.where(cmax == cmin, 0.0, (hr + hg + hb) / 6.0)
-    H[H < 0.0] += 1.0
-
-    L = cmax
-    St = cmax <= 0.0001
-    cmax[St] = 1.0
-    S = np.where(St, 0.0, (cmax - cmin) / cmax)
-
-    return np.dstack([H, S, L])
 
 
 if False:
@@ -827,13 +803,30 @@ def normals_simple(pix, source):
 
         float4 pix = read_imagef(input, sampler, (int2)(x, y));
 
-        float x_comp = READP(x-1, y).x - READP(x+1, y).x;
-        float y_comp = READP(x, y-1).x - READP(x, y+1).x;
+        // sobel operator
+        float x_comp = READP(x-1, y).x
+            +READP(x-1, y+1).x
+            +READP(x-1, y-1).x
+            - READP(x+1, y).x
+            - READP(x+1, y+1).x
+            - READP(x+1, y-1).x;
 
-        float3 v = (float3)(x_comp, y_comp, 1.0f/steepness);
-        v = v/length(v)/2.0f;
+        float y_comp = READP(x, y-1).x
+            + READP(x+1, y-1).x
+            + READP(x-1, y-1).x
+            - READP(x, y+1).x
+            - READP(x+1, y+1).x
+            - READP(x-1, y+1).x;
 
-        float4 out = (float4)(v.x + 0.5, v.y + 0.5, v.z + 0.5, 1.0f);
+        float2 grad = (float2)(x_comp, y_comp);
+        float l = length(grad);
+        grad /= l;
+
+        // from pythagoras
+        float height;
+        height = l < 1.0f ? sqrt(1.0f - l*l) : 0.0f;
+
+        float4 out = (float4)(x_comp*0.5 + 0.5, y_comp*0.5 + 0.5, height*0.5 + 0.5, 1.0f);
         write_imagef(output, (int2)(x,y), out);
     }
     """
