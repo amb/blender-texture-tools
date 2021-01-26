@@ -528,19 +528,23 @@ def median_filter(pix, radius):
     return out.to_numpy()
 
 
-def vectors_to_nmap(vectors, nmap):
+def vectors_to_nmap(vectors):
+    nmap = np.empty((vectors.shape[0], vectors.shape[1], 4), dtype=np.float32)
     vectors *= 0.5
     nmap[:, :, 0] = vectors[:, :, 0] + 0.5
     nmap[:, :, 1] = vectors[:, :, 1] + 0.5
     nmap[:, :, 2] = vectors[:, :, 2] + 0.5
+    nmap[..., 3] = 1.0
+    return nmap
 
 
 def nmap_to_vectors(nmap):
-    vectors = np.empty((nmap.shape[0], nmap.shape[1], 3), dtype=np.float32)
+    vectors = np.empty((nmap.shape[0], nmap.shape[1], 4), dtype=np.float32)
     vectors[..., 0] = nmap[..., 0] - 0.5
     vectors[..., 1] = nmap[..., 1] - 0.5
     vectors[..., 2] = nmap[..., 2] - 0.5
     vectors *= 2.0
+    vectors[..., 3] = 1.0
     return vectors
 
 
@@ -557,7 +561,7 @@ def linear_to_srgb(c, clamp=True):
 def srgb_to_linear(c):
     "sRGB to linear sRGB"
     assert c.dtype == np.float32
-    return np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    return np.where(c >= 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
 
 
 def rgb2hsv(image):
@@ -1099,20 +1103,9 @@ def inpaint_tangents(pixels, threshold):
 
 
 def normalize_tangents(image):
-    ih, iw = image.shape[0], image.shape[1]
-    vectors = np.zeros((ih, iw, 3), dtype=np.float32)
-    vectors[..., 0] = image[..., 0] - 0.5
-    vectors[..., 1] = image[..., 1] - 0.5
-    vectors[..., 2] = image[..., 2] - 0.5
-
-    vectors = (vectors.T / np.linalg.norm(vectors, axis=2)).T * 0.5
-
-    retarr = np.empty_like(image)
-    retarr[:, :, 0] = 0.5 + vectors[:, :, 0]
-    retarr[:, :, 1] = 0.5 + vectors[:, :, 1]
-    retarr[:, :, 2] = 0.5 + vectors[:, :, 2]
-    retarr[:, :, 3] = image[..., 3]
-
+    vectors = nmap_to_vectors(image)[..., :3]
+    vectors = (vectors.T / np.linalg.norm(vectors, axis=2).T).T
+    retarr = vectors_to_nmap(vectors)
     return retarr
 
 
