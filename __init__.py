@@ -83,20 +83,34 @@ class CLImage:
         return out
 
 
-CLFloat = NewType("CLFloat", float)
-CLInt = NewType("CLInt", int)
+CLFloat = NewType("CLFloat", np.float32)
+CLInt = NewType("CLInt", np.int32)
 
 
-class CLFloatArray:
-    def __init__(self, a):
+class CLFloat2D:
+    def __init__(self, cldev, a):
         assert a.dtype == np.float32
-        self.data = a
+        self.cldev = cldev
+        self.width = a.shape[1]
+        self.height = a.shape[0]
+        res, evt = cl.buffer_from_ndarray(self.cldev.queue, a)
+        evt.wait()
+        self.data = res
+
+    def to_numpy(self):
+        res, evt = cl.buffer_to_ndarray(
+            self.cldev.queue, self.data, dtype=np.float32, shape=(self.width, self.height)
+        )
+        evt.wait()
+        return res
 
 
-class CLIntArray:
-    def __init__(self, a):
+class CLInt2D:
+    def __init__(self, w, h, a):
         assert a.dtype == np.int32
         self.data = a
+        self.width = w
+        self.height = h
 
 
 class CLDev:
@@ -235,8 +249,8 @@ class CLDev:
         cl_types = {
             "CLFloat": ("const float", cl.cl_float),
             "CLInt": ("const int", cl.cl_int),
-            "CLFloatArray": ("const __global float*", cl.cl_mem),
-            "CLIntArray": ("const __global int*", cl.cl_mem),
+            "CLFloat2D": ("const __global float*", cl.cl_mem),
+            "CLInt2D": ("const __global int*", cl.cl_mem),
             "CLImage": ("__read_only image2d_t", cl.cl_image),
         }
 
@@ -257,7 +271,7 @@ class CLDev:
             pstr.append(",\n")
 
             iparams.append(cl_types[pname][1])
-        pstr.append("__write_only image2d_t output")
+
         iparams = tuple(iparams)
 
         sampler = """
@@ -270,15 +284,20 @@ class CLDev:
         const int width = get_image_width(output), height = get_image_height(output);
         """
 
+        out_type = "float4 out;"
+        out_writer = "write_imagef(output, loc, out);"
+        pstr.append("__write_only image2d_t output")
+
         src = f"""
         #define READP(input,loc) read_imagef(input, sampler, loc)
+        #define READF(input,loc) input[loc.x + loc.y * width]
         __kernel void {input_func.__name__}(
             {"".join(pstr)})
         {{
-            float4 out;
+            {out_type}
             {sampler}
             {source}
-            write_imagef(output, loc, out);
+            {out_writer}
         }}
         """
 
@@ -308,7 +327,7 @@ class CLDev:
 
         # TBD:  figure out if this is even a smart idea
 
-        # self._decorator_builder(input_func)
+        self._decorator_builder(input_func)
 
         return None
 
@@ -316,13 +335,13 @@ class CLDev:
 cl_builder = CLDev()
 
 
-# @cl_builder.image_kernel
-# def gtscale(vee: CLInt, fio: CLImage):
-#     return """
-#     float4 px = READP(input, loc);
-#     float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-#     out = ((float4)(g, g, g, px.w));
-#     """
+@cl_builder.image_kernel
+def gtscale(vee: CLInt, fio: CLImage):
+    return """
+    float4 px = READP(input, loc);
+    float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
+    out = ((float4)(g, g, g, px.w));
+    """
 
 
 def grayscale(ssp):
@@ -334,7 +353,7 @@ def grayscale(ssp):
         const int2 loc = (int2)(get_global_id(0), get_global_id(1));
         const sampler_t sampler = \
             CLK_NORMALIZED_COORDS_FALSE |
-            CLK_ADDRESS_REPEAT |
+            CLK_ADDRESS_CLAMP_TO_EDGE |
             CLK_FILTER_NEAREST;
         float4 px = read_imagef(A, sampler, loc);
         //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
@@ -567,60 +586,6 @@ def nmap_to_vectors(nmap):
     vectors *= 2.0
     vectors[..., 3] = 1.0
     return vectors
-
-
-if False:
-    True
-    # function rgb2hue(r, g, b) {
-    #   r /= 255;
-    #   g /= 255;
-    #   b /= 255;
-    #   var max = Math.max(r, g, b);
-    #   var min = Math.min(r, g, b);
-    #   var c   = max - min;
-    #   var hue;
-    #   if (c == 0) {
-    #     hue = 0;
-    #   } else {
-    #     switch(max) {
-    #       case r:
-    #         var segment = (g - b) / c;
-    #         var shift   = 0 / 60;       // R° / (360° / hex sides)
-    #         if (segment < 0) {          // hue > 180, full rotation
-    #           shift = 360 / 60;         // R° / (360° / hex sides)
-    #         }
-    #         hue = segment + shift;
-    #         break;
-    #       case g:
-    #         var segment = (b - r) / c;
-    #         var shift   = 120 / 60;     // G° / (360° / hex sides)
-    #         hue = segment + shift;
-    #         break;
-    #       case b:
-    #         var segment = (r - g) / c;
-    #         var shift   = 240 / 60;     // B° / (360° / hex sides)
-    #         hue = segment + shift;
-    #         break;
-    #     }
-    #   }
-    #   return hue * 60; // hue is in [0,6], scale it up
-    # }
-
-    # void YUVfromRGB(double& Y, double& U, double& V, const double R, const double G, const double B)
-    # {
-    #   Y =  0.257 * R + 0.504 * G + 0.098 * B +  16;
-    #   U = -0.148 * R - 0.291 * G + 0.439 * B + 128;
-    #   V =  0.439 * R - 0.368 * G - 0.071 * B + 128;
-    # }
-    # void RGBfromYUV(double& R, double& G, double& B, double Y, double U, double V)
-    # {
-    #   Y -= 16;
-    #   U -= 128;
-    #   V -= 128;
-    #   R = 1.164 * Y             + 1.596 * V;
-    #   G = 1.164 * Y - 0.392 * U - 0.813 * V;
-    #   B = 1.164 * Y + 2.017 * U;
-    # }
 
 
 def normalize(pix, save_alpha=False):
@@ -1171,29 +1136,6 @@ class Swizzle_IOP(image_ops.ImageOperatorGenerator):
             return temp
 
         self.payload = _pl
-
-
-# class TestPattern_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         # self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
-#         # self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
-#         # self.props["direction"] = bpy.props.EnumProperty(
-#         #     name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
-#         # )
-#         self.prefix = "test_pattern"
-#         self.info = "Test pattern"
-#         self.category = "Basic"
-
-#         def _pl(self, image, context):
-#             # RED
-#             image[:, 90:100, 0] = 1.0
-
-#             # GREEN
-#             image[90:100, :, 1] = 1.0
-
-#             return image
-
-#         self.payload = _pl
 
 
 class Normalize_IOP(image_ops.ImageOperatorGenerator):

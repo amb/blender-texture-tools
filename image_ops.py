@@ -80,6 +80,10 @@ def create(lc, additional_classes):
     _props["source"] = bpy.props.PointerProperty(name="Image", type=bpy.types.Image)
     _props["target"] = bpy.props.PointerProperty(name="Image", type=bpy.types.Image)
 
+    # _props["linear"] = bpy.props.BoolProperty(
+    #     name="Linear", default=False, description="Use linear sRGB color space for operations"
+    # )
+
     def _panel_draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
@@ -99,6 +103,9 @@ def create(lc, additional_classes):
             row = box.row()
             row.prop(context.scene.texture_tools, "global" + "_target")
 
+        # row = layout.row()
+        # row.prop(context.scene.texture_tools, "global_linear")
+
     # Build the rest of the panel
     pbuild = master_ops.PanelBuilder(
         "texture_tools",
@@ -113,6 +120,22 @@ def create(lc, additional_classes):
     )
 
     return pbuild.register_params, pbuild.unregister_params
+
+
+def linear_to_srgb(c, clamp=True):
+    "linear sRGB to sRGB"
+    assert c.dtype == np.float32
+    srgb = np.where(c < 0.0031308, c * 12.92, 1.055 * (c ** (1.0 / 2.4)) - 0.055)
+    if clamp:
+        srgb[srgb > 1.0] = 1.0
+        srgb[srgb < 0.0] = 0.0
+    return srgb
+
+
+def srgb_to_linear(c):
+    "sRGB to linear sRGB"
+    assert c.dtype == np.float32
+    return np.where(c >= 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
 
 
 class ImageOperator(master_ops.MacroOperator):
@@ -137,16 +160,16 @@ class ImageOperator(master_ops.MacroOperator):
         input_pixels = np.empty(len(image.pixels), dtype=np.float32)
 
         image.pixels.foreach_get(input_pixels)
-        # print(input_pixels.dtype, type(input_pixels))
         input_pixels = input_pixels.reshape(source_image.size[1], source_image.size[0], 4)
 
+        # if ctt.global_linear:
+        #     input_pixels = srgb_to_linear(input_pixels)
         # with utils.Profile_this(lines=10):
         result = self.payload(input_pixels, context)
+        # if ctt.global_linear:
+        #     result = linear_to_srgb(result, clamp=True)
 
-        if (
-            target_image.size[1] != result.shape[0]
-            or target_image.size[0] != result.shape[1]
-        ):
+        if target_image.size[1] != result.shape[0] or target_image.size[0] != result.shape[1]:
             print("Scaling image")
             target_image.scale(result.shape[1], result.shape[0])
 
