@@ -302,29 +302,14 @@ cl_builder = CLDev(0)
 #     return tuple(CLImage)
 
 
-def grayscale(ssp):
-    src = """
-    __kernel void grayscale(
-        __read_only image2d_t A,
-        __write_only image2d_t output)
-    {
-        const int2 loc = (int2)(get_global_id(0), get_global_id(1));
-        const sampler_t sampler = \
-            CLK_NORMALIZED_COORDS_FALSE |
-            CLK_ADDRESS_CLAMP_TO_EDGE |
-            CLK_FILTER_NEAREST;
-        float4 px = read_imagef(A, sampler, loc);
-        //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
-        float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-        write_imagef(output, loc, (float4)(g, g, g, px.w));
-    }
-    """
-
-    k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image))
-
-    out = cl_builder.new_image(ssp.shape[1], ssp.shape[0])
-    cl_builder.run(k, [], (cl_builder.new_image_from_ndarray(ssp),), out)
-    return out.to_numpy()
+# class CL_Gscale(ImageKernel):
+#     source = """
+#     float4 px = READP(input, loc);
+#     float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
+#     out = ((float4)(g, g, g, px.w));
+#     """
+#     inputs = {"input": CLImage}
+#     outputs = {"out": CLImage}
 
 
 def grayscale_cl(img, out):
@@ -347,6 +332,12 @@ def grayscale_cl(img, out):
     k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image))
     cl_builder.run(k, [], (img,), out)
     return (out, img)
+
+
+def grayscale(ssp):
+    out = cl_builder.new_image(ssp.shape[1], ssp.shape[0])
+    grayscale_cl(cl_builder.new_image_from_ndarray(ssp), out)
+    return out.to_numpy()
 
 
 def linear_to_srgb(c, clamp=True):
@@ -1482,7 +1473,7 @@ class DirectionalBilateral_IOP(image_ops.ImageOperatorGenerator):
         )
         self.prefix = "directional_blur"
         self.info = "Directional bilateral"
-        self.category = "Filter"
+        self.category = "Advanced"
         self.payload = lambda self, image, context: directional_blur_cl(
             image, self.radius, self.preserve
         )

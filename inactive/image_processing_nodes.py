@@ -3,7 +3,7 @@ import bpy
 import nodeitems_utils
 from nodeitems_utils import NodeCategory, NodeItem
 
-# image_processing_nodes
+
 class ImageSocket(bpy.types.NodeSocket):
     bl_idname = "ImageSocket"
     bl_label = "Image Node Socket"
@@ -170,7 +170,3 @@ def unregister():
     for entry in regclasses:
         bpy.utils.unregister_class(entry)
 
-
-if __name__ == "__main__":
-    # unregister()
-    register()
