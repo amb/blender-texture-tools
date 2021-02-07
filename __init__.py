@@ -49,16 +49,30 @@ def min_ptwo(val, pt):
 class CLImage:
     def __init__(self, cldev, w, h):
         self.cldev = cldev
-        self.width = w
-        self.height = h
+        self.original_width = w
+        self.original_height = h
+        self.width = min_ptwo(w, 8)
+        self.height = min_ptwo(h, 8)
+        assert self.width % 8 == 0, "Image width must be divisible by 8"
+        assert self.height % 8 == 0, "Image height must be divisible by 8"
         # Default memflags are CL_MEM_READ_WRITE
-        self.image = cl.clCreateImage2D(cldev.ctx, w, h, imgformat=cldev.image_format)
+        self.image = cl.clCreateImage2D(
+            cldev.ctx, self.width, self.height, imgformat=cldev.image_format
+        )
 
     def from_numpy(self, source):
+        h, w = source.shape[0], source.shape[1]
+        if h % 8 != 0 or w % 8 != 0:
+            padding = np.zeros(
+                (min_ptwo(h, 8), min_ptwo(w, 8), source.shape[2]), dtype=source.dtype
+            )
+            padding[:h, :w] = source[:, :]
+            source = padding
         ary = np.ascontiguousarray(source)
         if ary.__array_interface__["strides"]:
             raise ValueError("I don't know how to handle strided arrays yet.")
         ptr = void_p(ary.__array_interface__["data"][0])
+        # print(self.image._height, self.image._width, ary.shape)
         evt = cl.clEnqueueWriteImage(
             self.cldev.queue, self.image, ptr, (0, 0, 0), (ary.shape[1], ary.shape[0], 1), 0, 0
         )
@@ -80,7 +94,8 @@ class CLImage:
             0,
         )
         evt.wait()
-        return out
+        # return out
+        return out[: self.original_height, : self.original_width]
 
 
 CLFloat = NewType("CLFloat", np.float32)
@@ -114,7 +129,7 @@ class CLInt2D:
 
 
 class CLDev:
-    "OpenCL device class specifically for image processing"
+    """ OpenCL device class """
 
     def __init__(self, dev_id):
         self.ctx = cl.clCreateContext()
@@ -184,7 +199,9 @@ class CLDev:
         "Run CL kernel on params. Multiple in, single out. CLImage buffers."
         assert len(inputs) > 0
         if shape is None:
-            shape = (min_ptwo(output.width, 8), min_ptwo(output.height, 8))
+            shape = (output.image._width, output.image._height)
+        assert shape[1] % 8 == 0, "Input image height must be divisible by 8"
+        assert shape[0] % 8 == 0, "Input image width must be divisible by 8"
         run_evt = kernel(*params, *[i.image for i in inputs], output.image).on(
             self.queue, offset=(0, 0), gsize=shape, lsize=(8, 8)
         )
@@ -193,6 +210,8 @@ class CLDev:
     def run_buffer(self, kernel, params, output, shape=None):
         "Run CL kernel on params. Multiple in, single out. Generic buffers."
         assert shape is not None
+        assert shape[1] % 8 == 0, "Input buffer height must be divisible by 8"
+        assert shape[0] % 8 == 0, "Input buffer width must be divisible by 8"
         f_shape = (min_ptwo(shape[1], 8), min_ptwo(shape[0], 8))
         run_evt = kernel(*params, output).on(self.queue, gsize=f_shape, lsize=(8, 8))
         run_evt.wait()
@@ -364,56 +383,6 @@ def gauss_curve(x):
     return res
 
 
-def gaussian_repeat(pix, s):
-    "Separated gaussian for image. Over borders = wraparound"
-    assert pix.dtype == np.float32
-
-    SAMPLER_DEF = """
-    const sampler_t sampler = \
-        CLK_NORMALIZED_COORDS_FALSE |
-        CLK_ADDRESS_CLAMP_TO_EDGE |
-        CLK_FILTER_NEAREST;
-    const int x = get_global_id(0), y = get_global_id(1);
-    const int width = get_image_width(output), height = get_image_height(output);
-    """
-
-    def _builder(name, core):
-        return cl_builder.build(
-            name,
-            """
-            __kernel void {NAME}(
-                const int s,
-                const __global float *gc,
-                __read_only image2d_t input,
-                __write_only image2d_t output)
-            {{
-                {SAMPLER}
-                float4 color = (float4)0.0f;
-                for (int i=0;i<s*2+1;i++)  {{
-                    color += read_imagef(input, sampler, (int2)({CORE})) * gc[i];
-                }}
-                write_imagef(output, (int2)(x,y), color);
-            }}
-            """.format(
-                SAMPLER=SAMPLER_DEF, CORE=core, NAME=name
-            ),
-            (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image),
-        )
-
-    # Horizontal gaussian blur wraparound
-    kh = _builder("gaussian_h", "((x+i-s)+width)%width,y")
-
-    # Vertical gaussian blur wraparound
-    kv = _builder("gaussian_v", "x,((y+i-s)+height)%height")
-
-    gc_c = cl_builder.to_buffer(gauss_curve(s))
-    img = cl_builder.new_image_from_ndarray(pix)
-    out = cl_builder.new_image(img.width, img.height)
-    cl_builder.run(kh, [s, gc_c], (img,), out)
-    cl_builder.run(kv, [s, gc_c], (out,), img)
-    return img.to_numpy()
-
-
 def gaussian_repeat_cl(img, out, s):
     SAMPLER_DEF = """
     const sampler_t sampler = \
@@ -428,36 +397,50 @@ def gaussian_repeat_cl(img, out, s):
         return cl_builder.build(
             name,
             """
+            #define POW2(a) ((a) * (a))
             __kernel void {NAME}(
                 const int s,
-                const __global float *gc,
                 __read_only image2d_t input,
                 __write_only image2d_t output)
             {{
                 {SAMPLER}
                 float4 color = (float4)0.0f;
+                float4 accum = (float4)0.0f;
+                float gval = 0.0f;
                 float w = read_imagef(input, sampler, (int2)(x, y)).w;
-                for (int i=0;i<s*2+1;i++)  {{
-                    color += read_imagef(input, sampler, (int2)({CORE})) * gc[i];
+                for (int i=-s;i<=s;i++)  {{
+                    gval = exp(-0.5f * ((float)POW2(i)) / (float)s);
+                    color += read_imagef(input, sampler, (int2)({CORE})) * gval;
+                    accum += gval;
                 }}
+                color /= accum;
                 write_imagef(output, (int2)(x,y), (float4)(color.xyz, w));
             }}
             """.format(
                 SAMPLER=SAMPLER_DEF, CORE=core, NAME=name
             ),
-            (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image),
+            (cl.cl_int, cl.cl_image, cl.cl_image),
         )
 
     # Horizontal gaussian blur wraparound
-    kh = _builder("gaussian_h", "((x+i-s)+width)%width,y")
+    kh = _builder("gaussian_h", "((x+i)+width)%width,y")
 
     # Vertical gaussian blur wraparound
-    kv = _builder("gaussian_v", "x,((y+i-s)+height)%height")
+    kv = _builder("gaussian_v", "x,((y+i)+height)%height")
 
-    gc_c = cl_builder.to_buffer(gauss_curve(s))
-    cl_builder.run(kh, [s, gc_c], (img,), out)
-    cl_builder.run(kv, [s, gc_c], (out,), img)
+    # gc_c = cl_builder.to_buffer(gauss_curve(s))
+    cl_builder.run(kh, [s], (img,), out)
+    cl_builder.run(kv, [s], (out,), img)
     return (img, out)
+
+
+def gaussian_repeat(pix, s):
+    "Separated gaussian for image. Over borders = wraparound"
+    assert pix.dtype == np.float32
+    img = cl_builder.new_image_from_ndarray(pix)
+    out = cl_builder.new_image(img.width, img.height)
+    gaussian_repeat_cl(img, out, s)
+    return img.to_numpy()
 
 
 def bilateral_cl(pix, radius, preserve):
@@ -621,7 +604,7 @@ def directional_blur_cl(pix, radius, preserve):
         float2 v_vec = (float2)(-dy, dx);
         // against tangent flow
         float2 u_vec = (float2)(dx, dy);
-        
+
         weight = 1.0f;
 
         for (float v = -n_radius; v <= n_radius; v=v+1.0f) {
@@ -1042,6 +1025,8 @@ def gauss_seidel_cl(w, h, h2, target, inp, outp):
         src,
         (cl.cl_int, cl.cl_int, cl.cl_float, cl.cl_mem, cl.cl_mem, cl.cl_mem),
     )
+    assert w % 8 == 0, "Image width must be divisible by 8"
+    assert h % 8 == 0, "Image width must be divisible by 8"
     cl_builder.run_buffer(cth, [w, h, h2, inp, target], outp, shape=(h, w))
 
 
