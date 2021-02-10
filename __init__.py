@@ -46,17 +46,26 @@ def min_ptwo(val, pt):
     return ((val - 1) // pt + 1) * pt
 
 
-class CLImage:
-    def __init__(self, cldev, w, h):
+class CLType:
+    def __init__(self, cldev, w, h, simple=False):
         self.cldev = cldev
+        self.simple = simple
         self.original_width = w
         self.original_height = h
         self.width = min_ptwo(w, 8)
         self.height = min_ptwo(h, 8)
+        self.shape = (self.width, self.height)
+        self.type_name = "undefined"
+
+
+class CLImage(CLType):
+    def __init__(self, cldev, w, h):
+        super().__init__(cldev, w, h, simple=False)
         assert self.width % 8 == 0, "Image width must be divisible by 8"
         assert self.height % 8 == 0, "Image height must be divisible by 8"
+        self.type_name = "image"
         # Default memflags are CL_MEM_READ_WRITE
-        self.image = cl.clCreateImage2D(
+        self.data = cl.clCreateImage2D(
             cldev.ctx, self.width, self.height, imgformat=cldev.image_format
         )
 
@@ -72,9 +81,9 @@ class CLImage:
         if ary.__array_interface__["strides"]:
             raise ValueError("I don't know how to handle strided arrays yet.")
         ptr = void_p(ary.__array_interface__["data"][0])
-        # print(self.image._height, self.image._width, ary.shape)
+        # print(self.data._height, self.data._width, ary.shape)
         evt = cl.clEnqueueWriteImage(
-            self.cldev.queue, self.image, ptr, (0, 0, 0), (ary.shape[1], ary.shape[0], 1), 0, 0
+            self.cldev.queue, self.data, ptr, (0, 0, 0), (ary.shape[1], ary.shape[0], 1), 0, 0
         )
         evt.wait()
 
@@ -86,7 +95,7 @@ class CLImage:
         # TODO: enforce x%8==0 pixel step
         evt = cl.clEnqueueReadImage(
             self.cldev.queue,
-            self.image,
+            self.data,
             ptr,
             (0, 0, 0),
             (self.width, self.height, 1),
@@ -98,38 +107,36 @@ class CLImage:
         return out[: self.original_height, : self.original_width]
 
 
-CLFloat = NewType("CLFloat", np.float32)
-CLInt = NewType("CLInt", np.int32)
-
-
-class CLFloat2D:
+class CLFloat2D(CLType):
     def __init__(self, cldev, a):
+        super().__init__(cldev, a.shape[1], a.shape[0], simple=False)
         assert a.dtype == np.float32
-        self.cldev = cldev
-        self.width = a.shape[1]
-        self.height = a.shape[0]
+        self.type_name = "float2d"
         res, evt = cl.buffer_from_ndarray(self.cldev.queue, a)
         evt.wait()
         self.data = res
 
     def to_numpy(self):
         res, evt = cl.buffer_to_ndarray(
-            self.cldev.queue, self.data, dtype=np.float32, shape=(self.width, self.height)
+            self.cldev.queue, self.data, dtype=np.float32, shape=self.shape
         )
         evt.wait()
         return res
 
 
-class CLInt2D:
-    def __init__(self, w, h, a):
-        assert a.dtype == np.int32
-        self.data = a
-        self.width = w
-        self.height = h
+# CLFloat = NewType("CLFloat", np.float32)
+# CLInt = NewType("CLInt", np.int32)
+
+# class CLInt2D:
+#     def __init__(self, w, h, a):
+#         assert a.dtype == np.int32
+#         self.data = a
+#         self.width = w
+#         self.height = h
 
 
 class CLDev:
-    """ OpenCL device class """
+    """ OpenCL device class for 2D-3D image array processing """
 
     def __init__(self, dev_id):
         self.ctx = cl.clCreateContext()
@@ -195,167 +202,163 @@ class CLDev:
         i.from_numpy(arr)
         return i
 
-    def run(self, kernel, params, inputs, output, shape=None):
-        "Run CL kernel on params. Multiple in, single out. CLImage buffers."
-        assert len(inputs) > 0
-        if shape is None:
-            shape = (output.image._width, output.image._height)
-        assert shape[1] % 8 == 0, "Input image height must be divisible by 8"
-        assert shape[0] % 8 == 0, "Input image width must be divisible by 8"
-        run_evt = kernel(*params, *[i.image for i in inputs], output.image).on(
-            self.queue, offset=(0, 0), gsize=shape, lsize=(8, 8)
-        )
-        run_evt.wait()
-
-    def run_buffer(self, kernel, params, output, shape=None):
-        "Run CL kernel on params. Multiple in, single out. Generic buffers."
-        assert shape is not None
-        assert shape[1] % 8 == 0, "Input buffer height must be divisible by 8"
-        assert shape[0] % 8 == 0, "Input buffer width must be divisible by 8"
-        f_shape = (min_ptwo(shape[1], 8), min_ptwo(shape[0], 8))
-        run_evt = kernel(*params, output).on(self.queue, gsize=f_shape, lsize=(8, 8))
-        run_evt.wait()
-
     def to_buffer(self, narray):
         gc_c, gc_e = cl.buffer_from_ndarray(self.queue, narray)
         gc_e.wait()
         return gc_c
 
-    def _decorator_builder(self, input_func, seamless=False):
-        cl_types = {
-            "CLFloat": ("const float", cl.cl_float),
-            "CLInt": ("const int", cl.cl_int),
-            "CLFloat2D": ("const __global float*", cl.cl_mem),
-            "CLInt2D": ("const __global int*", cl.cl_mem),
-            "CLImage": ("__read_only image2d_t", cl.cl_image),
-        }
-
-        # parse input func
-        params = {}
-        for i in input_func.__annotations__.items():
-            params[i[0]] = i[1]
-
-        source = input_func(*([None] * len(params)))
-
-        pstr = []
-        iparams = []
-        for p in params.items():
-            pname = p[1].__name__
-            assert pname in cl_types
-
-            pstr.append(cl_types[pname][0] + " " + p[0])
-            pstr.append(",\n")
-
-            iparams.append(cl_types[pname][1])
-
-        iparams = tuple(iparams)
-
-        sampler = """
-        const sampler_t sampler = \\
-            CLK_NORMALIZED_COORDS_FALSE |
-            CLK_ADDRESS_CLAMP_TO_EDGE |
-            CLK_FILTER_NEAREST;
-        const int gx = get_global_id(0), gy = get_global_id(1);
-        const int2 loc = (int2)(gx, gy);
-        const int width = get_image_width(output), height = get_image_height(output);
-        """
-
-        out_type = "float4 out;"
-        out_writer = "write_imagef(output, loc, out);"
-        pstr.append("__write_only image2d_t output")
-
-        src = f"""
-        #define READP(input,loc) read_imagef(input, sampler, loc)
-        #define READF(input,loc) input[loc.x + loc.y * width]
-        __kernel void {input_func.__name__}(
-            {"".join(pstr)})
-        {{
-            {out_type}
-            {sampler}
-            {source}
-            {out_writer}
-        }}
-        """
-
-        print(src)
-
-        # new_kernel = cl_builder.build(
-        #     name,
-        #     f"""
-        #     __kernel void {name}(
-        #         const int s,
-        #         const __global float *gc,
-        #         __read_only image2d_t input,
-        #         __write_only image2d_t output)
-        #     {{
-        #         {sampler}
-        #         {source}
-        #         write_imagef(output, (int2)(x,y), out);
-        #     }}
-        #     """,
-        #     (cl.cl_int, cl.cl_mem, cl.cl_image, cl.cl_image),
-        # )
-
-        return None
-
-    def image_kernel(self, input_func):
-        """ Builds a OpenCL kernel and a Python function to run it """
-
-        # TBD:  figure out if this is even a smart idea
-
-        self._decorator_builder(input_func)
-
-        return None
+    def run(self, kernel, params, inputs, outputs, shape=None):
+        "Run CL kernel on params. Multiple in, single out. CLImage buffers."
+        assert len(inputs) > 0 or len(outputs) > 0
+        assert shape is not None
+        assert type(shape[1]) == int
+        assert type(shape[0]) == int
+        assert shape[1] % 8 == 0, "Input image height must be divisible by 8"
+        assert shape[0] % 8 == 0, "Input image width must be divisible by 8"
+        run_evt = kernel(shape[1], shape[0], *params, *inputs, *outputs).on(
+            self.queue, offset=(0, 0), gsize=shape, lsize=(8, 8)
+        )
+        run_evt.wait()
 
 
 cl_builder = CLDev(0)
 
 
-# @cl_builder.image_kernel
-# def gtscale(vee: CLInt, fio: CLImage):
-#     """
-#     float4 px = READP(input, loc);
-#     float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-#     out = ((float4)(g, g, g, px.w));
-#     """
-#     return tuple(CLImage)
-
-
-# class CL_Gscale(ImageKernel):
-#     source = """
-#     float4 px = READP(input, loc);
-#     float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-#     out = ((float4)(g, g, g, px.w));
-#     """
-#     inputs = {"input": CLImage}
-#     outputs = {"out": CLImage}
-
-
-def grayscale_cl(img, out):
-    src = """
-    __kernel void grayscale(
-        __read_only image2d_t A,
-        __write_only image2d_t output)
-    {
-        const int2 loc = (int2)(get_global_id(0), get_global_id(1));
-        const sampler_t sampler = \
-            CLK_NORMALIZED_COORDS_FALSE |
-            CLK_ADDRESS_CLAMP_TO_EDGE |
-            CLK_FILTER_NEAREST;
-        float4 px = read_imagef(A, sampler, loc);
-        //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
-        float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-        write_imagef(output, loc, (float4)(g, g, g, px.w));
+class NodeCLKernel:
+    cl_types = {
+        "CLFloat": ("float", cl.cl_float),
+        "CLInt": ("int", cl.cl_int),
+        "CLFloat2D": ("__global float*", cl.cl_mem),
+        # "CLInt2D": ("__global int*", cl.cl_mem),
+        "CLImage": ("image2d_t", cl.cl_image),
     }
+
+    kernels = {}
+
+    def _builder(self):
+        # Build function definition values
+        pstr = []
+        signature = [cl.cl_int, cl.cl_int]
+        array_or_image = [("const", ""), ("__read_only", "__write_only")]
+        shape_sources = set(["CLFloat2D", "CLImage"])
+        self.shape_source = ("", None)
+        for i, (k, v) in enumerate(self.inputs.items()):
+            signature.append(self.cl_types[v.__name__][1])
+            if v.__name__ in shape_sources:
+                self.shape_source = (0, i)
+            a = array_or_image[(v.__name__ == "CLImage") * 1]
+            pstr.append(f"{a[0]} {self.cl_types[v.__name__][0]} {k}")
+            pstr.append(",\n")
+
+        for i, (k, v) in enumerate(self.outputs.items()):
+            signature.append(self.cl_types[v.__name__][1])
+            if v.__name__ in shape_sources:
+                self.shape_source = (1, i)
+            a = array_or_image[(v.__name__ == "CLImage") * 1]
+            pstr.append(f"{a[1]} {self.cl_types[v.__name__][0]} {k}")
+            pstr.append(",\n")
+
+        # Remove last ", "
+        pstr = pstr[:-1]
+
+        # Build kernel definition
+        src = f"""
+        #define READP(input,loc) read_imagef(input, sampler, loc)
+        #define READF(input,loc) input[loc.x + loc.y * width]
+        #define WRITEP(output,loc,value) write_imagef(output, loc, value)
+        #define WRITEF(output,loc,value) output[loc.x + loc.y * width] = value
+        __kernel void {self.kernel_name}(
+            const int width,
+            const int height,
+            {"".join(pstr)})
+        {{
+            const sampler_t sampler = \\
+                CLK_NORMALIZED_COORDS_FALSE |
+                CLK_ADDRESS_CLAMP_TO_EDGE |
+                CLK_FILTER_NEAREST;
+            const int gx = get_global_id(0), gy = get_global_id(1);
+            const int2 loc = (int2)(gx, gy);
+            // const int width = get_image_width(output), height = get_image_height(output);
+            {self.source}
+        }}
+        """
+        print(src)
+        return cl_builder.build(self.kernel_name, src, tuple(signature))
+
+    def __init__(self, seamless=True):
+        self.signature = None
+        self.kernel = None
+
+        # Check all definitions for new kernel exist
+        scdict = self.__class__.__dict__
+        problem = False
+        problem |= "kernel_name" not in scdict
+        problem |= "inputs" not in scdict
+        problem |= "outputs" not in scdict
+        problem |= "source" not in scdict
+        if problem:
+            raise ValueError(
+                "NodeCLKernel definition missing some required parameters. "
+                "[kernel_name, inputs, outputs, source]"
+            )
+
+        # Check no name collisions
+        if self.kernel_name in NodeCLKernel.kernels:
+            raise ValueError("NodeCLKernel kernel name already exists. ")
+
+        self.kernel = self._builder()
+        NodeCLKernel.kernels[self.kernel_name] = self.kernel
+
+    def run(self, params, inputs, outputs):
+        choice, loc = self.shape_source
+        s = (inputs, outputs)[choice][loc].shape
+        cl_builder.run(
+            self.kernel, params, [i.data for i in inputs], [o.data for o in outputs], shape=s
+        )
+
+
+class CL_GrayScale(NodeCLKernel):
+    kernel_name = "grayscale"
+    # NOTE: In Python 3.7 and later, dicts are ordered. Doesn't work in Python 3.6 or earlier
+    inputs = {"input": CLImage}
+    outputs = {"output": CLImage}
+    source = """
+    float4 px = READP(input, loc);
+    float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
+    WRITEP(output, loc, (float4)(g, g, g, px.w));
     """
-    k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image))
-    cl_builder.run(k, [], (img,), out)
-    return (out, img)
+
+
+grayscale_cl = CL_GrayScale().run
+
+
+# def grayscale_cl(img, out):
+#     src = """
+#     __kernel void grayscale(
+#         const int width,
+#         const int height,
+#         __read_only image2d_t A,
+#         __write_only image2d_t output)
+#     {
+#         const int2 loc = (int2)(get_global_id(0), get_global_id(1));
+#         const sampler_t sampler = \
+#             CLK_NORMALIZED_COORDS_FALSE |
+#             CLK_ADDRESS_CLAMP_TO_EDGE |
+#             CLK_FILTER_NEAREST;
+#         float4 px = read_imagef(A, sampler, loc);
+#         //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
+#         float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
+#         write_imagef(output, loc, (float4)(g, g, g, px.w));
+#     }
+#     """
+#     k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image))
+#     cl_builder.run(k, [], (img.data,), (out.data,), shape=(img.width, img.height))
+#     return (out, img)
 
 
 def grayscale(ssp):
     out = cl_builder.new_image(ssp.shape[1], ssp.shape[0])
-    grayscale_cl(cl_builder.new_image_from_ndarray(ssp), out)
+    grayscale_cl([], [cl_builder.new_image_from_ndarray(ssp)], [out])
     return out.to_numpy()
 
 
@@ -993,6 +996,7 @@ def normals_to_curvature(pix):
 
 
 def gauss_seidel_cl(w, h, h2, target, inp, outp):
+    # TODO: fix name
     src = """
     __kernel void curvature_to_height(
         const int i_width,
