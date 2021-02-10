@@ -1,0 +1,15 @@
+{
+    "kernel_name": "grayscale",
+    "params": {},
+    "inputs": {
+        "input": "image"
+    },
+    "outputs": {
+        "output": "image"
+    },
+    "source": [
+        "float4 px = READP(input, loc);",
+        "float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;",
+        "WRITEP(output, loc, (float4)(g, g, g, px.w));"
+    ]
+}

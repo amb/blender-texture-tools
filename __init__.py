@@ -31,7 +31,11 @@ import functools
 import numpy as np
 from . import pycl as cl
 from ctypes import c_void_p as void_p
-from typing import NewType
+import glob
+import os
+
+# from typing import NewType
+import json
 
 from . import image_ops
 import importlib
@@ -55,7 +59,7 @@ class CLType:
         self.width = min_ptwo(w, 8)
         self.height = min_ptwo(h, 8)
         self.shape = (self.width, self.height)
-        self.type_name = "undefined"
+        self.type_name = None
 
 
 class CLImage(CLType):
@@ -91,19 +95,16 @@ class CLImage(CLType):
         "See pycl.py for buffer_to_ndarray"
         out = np.empty((self.height, self.width, 4), dtype=np.float32)
         assert out.flags.contiguous, "Don't know how to write non-contiguous yet."
-        ptr = void_p(out.__array_interface__["data"][0])
-        # TODO: enforce x%8==0 pixel step
         evt = cl.clEnqueueReadImage(
             self.cldev.queue,
             self.data,
-            ptr,
+            void_p(out.__array_interface__["data"][0]),
             (0, 0, 0),
             (self.width, self.height, 1),
             self.width * 4 * 4,
             0,
         )
         evt.wait()
-        # return out
         return out[: self.original_height, : self.original_width]
 
 
@@ -226,37 +227,41 @@ cl_builder = CLDev(0)
 
 class NodeCLKernel:
     cl_types = {
-        "CLFloat": ("float", cl.cl_float),
-        "CLInt": ("int", cl.cl_int),
-        "CLFloat2D": ("__global float*", cl.cl_mem),
-        # "CLInt2D": ("__global int*", cl.cl_mem),
-        "CLImage": ("image2d_t", cl.cl_image),
+        "float": ("float", cl.cl_float),
+        "int": ("int", cl.cl_int),
+        "float2d": ("__global float*", cl.cl_mem),
+        # "int2d": ("__global int*", cl.cl_mem),
+        "image": ("image2d_t", cl.cl_image),
     }
 
     kernels = {}
 
     def _builder(self):
         # Build function definition values
+        # Save function signature
+        # Find array dimensions from either output or input
         pstr = []
         signature = [cl.cl_int, cl.cl_int]
         array_or_image = [("const", ""), ("__read_only", "__write_only")]
-        shape_sources = set(["CLFloat2D", "CLImage"])
+        shape_sources = set(["float2d", "image"])
         self.shape_source = ("", None)
         for i, (k, v) in enumerate(self.inputs.items()):
-            signature.append(self.cl_types[v.__name__][1])
-            if v.__name__ in shape_sources:
+            signature.append(self.cl_types[v][1])
+            if v in shape_sources:
                 self.shape_source = (0, i)
-            a = array_or_image[(v.__name__ == "CLImage") * 1]
-            pstr.append(f"{a[0]} {self.cl_types[v.__name__][0]} {k}")
+            a = array_or_image[(v == "image") * 1]
+            pstr.append(f"{a[0]} {self.cl_types[v][0]} {k}")
             pstr.append(",\n")
 
         for i, (k, v) in enumerate(self.outputs.items()):
-            signature.append(self.cl_types[v.__name__][1])
-            if v.__name__ in shape_sources:
+            signature.append(self.cl_types[v][1])
+            if v in shape_sources:
                 self.shape_source = (1, i)
-            a = array_or_image[(v.__name__ == "CLImage") * 1]
-            pstr.append(f"{a[1]} {self.cl_types[v.__name__][0]} {k}")
+            a = array_or_image[(v == "image") * 1]
+            pstr.append(f"{a[1]} {self.cl_types[v][0]} {k}")
             pstr.append(",\n")
+
+        assert self.shape_source[1] is not None
 
         # Remove last ", "
         pstr = pstr[:-1]
@@ -282,7 +287,7 @@ class NodeCLKernel:
             {self.source}
         }}
         """
-        print(src)
+        # print(src)
         return cl_builder.build(self.kernel_name, src, tuple(signature))
 
     def __init__(self, seamless=True):
@@ -317,48 +322,33 @@ class NodeCLKernel:
         )
 
 
-class CL_GrayScale(NodeCLKernel):
-    kernel_name = "grayscale"
-    # NOTE: In Python 3.7 and later, dicts are ordered. Doesn't work in Python 3.6 or earlier
-    inputs = {"input": CLImage}
-    outputs = {"output": CLImage}
-    source = """
+gs_def = {
+    "kernel_name": "grayscale",
+    "params": {},
+    "inputs": {"input": "image"},
+    "outputs": {"output": "image"},
+    "source": """
     float4 px = READP(input, loc);
     float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
     WRITEP(output, loc, (float4)(g, g, g, px.w));
-    """
+    """,
+}
 
+# Turn every JSON file in cl_nodes folder into OpenCL functions
+cl_nodes = {}
+for bpath in glob.glob("cl_nodes/*"):
+    bname = os.path.basename(bpath)
+    node_name = "".join(bname.split(".")[:-1])
 
-grayscale_cl = CL_GrayScale().run
-
-
-# def grayscale_cl(img, out):
-#     src = """
-#     __kernel void grayscale(
-#         const int width,
-#         const int height,
-#         __read_only image2d_t A,
-#         __write_only image2d_t output)
-#     {
-#         const int2 loc = (int2)(get_global_id(0), get_global_id(1));
-#         const sampler_t sampler = \
-#             CLK_NORMALIZED_COORDS_FALSE |
-#             CLK_ADDRESS_CLAMP_TO_EDGE |
-#             CLK_FILTER_NEAREST;
-#         float4 px = read_imagef(A, sampler, loc);
-#         //write_imagef(output, loc, (float4)(loc.x/1024.0, 0.5, loc.y/1024.0, 1.0));
-#         float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-#         write_imagef(output, loc, (float4)(g, g, g, px.w));
-#     }
-#     """
-#     k = cl_builder.build("grayscale", src, (cl.cl_image, cl.cl_image))
-#     cl_builder.run(k, [], (img.data,), (out.data,), shape=(img.width, img.height))
-#     return (out, img)
+    with open(bpath, "r") as jf:
+        jres = json.loads(jf.read())
+    jres["source"] = "\n".join(jres["source"])
+    cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), jres)()
 
 
 def grayscale(ssp):
     out = cl_builder.new_image(ssp.shape[1], ssp.shape[0])
-    grayscale_cl([], [cl_builder.new_image_from_ndarray(ssp)], [out])
+    cl_nodes["grayscale"].run([], [cl_builder.new_image_from_ndarray(ssp)], [out])
     return out.to_numpy()
 
 
