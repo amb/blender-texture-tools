@@ -59,7 +59,6 @@ class CLType:
         self.width = min_ptwo(w, 8)
         self.height = min_ptwo(h, 8)
         self.shape = (self.width, self.height)
-        self.type_name = None
 
 
 class CLImage(CLType):
@@ -67,7 +66,6 @@ class CLImage(CLType):
         super().__init__(cldev, w, h, simple=False)
         assert self.width % 8 == 0, "Image width must be divisible by 8"
         assert self.height % 8 == 0, "Image height must be divisible by 8"
-        self.type_name = "image"
         # Default memflags are CL_MEM_READ_WRITE
         self.data = cl.clCreateImage2D(
             cldev.ctx, self.width, self.height, imgformat=cldev.image_format
@@ -112,7 +110,6 @@ class CLFloat2D(CLType):
     def __init__(self, cldev, a):
         super().__init__(cldev, a.shape[1], a.shape[0], simple=False)
         assert a.dtype == np.float32
-        self.type_name = "float2d"
         res, evt = cl.buffer_from_ndarray(self.cldev.queue, a)
         evt.wait()
         self.data = res
@@ -180,13 +177,15 @@ class CLDev:
 
         print("Build:", name)
         try:
-            b = cl.clCreateProgramWithSource(self.ctx, source).build()
+            prg = cl.clCreateProgramWithSource(self.ctx, source)
+            b = prg.build()
             kernel = b[name]
         except KeyError as e:
             print(e)
-            print(cl.clGetProgramBuildInfo(b, cl.cl_program_build_info.CL_PROGRAM_BUILD_STATUS, 0))
-            print(cl.clGetProgramBuildInfo(b, cl.cl_program_build_info.CL_PROGRAM_BUILD_OPTIONS, 0))
-            print(cl.clGetProgramBuildInfo(b, cl.cl_program_build_info.CL_PROGRAM_BUILD_LOG, 0))
+            prg_info = cl.cl_program_build_info
+            print(cl.clGetProgramBuildInfo(prg, prg_info.CL_PROGRAM_BUILD_STATUS, 0))
+            print(cl.clGetProgramBuildInfo(prg, prg_info.CL_PROGRAM_BUILD_OPTIONS, 0))
+            print(cl.clGetProgramBuildInfo(prg, prg_info.CL_PROGRAM_BUILD_LOG, 0))
             raise
 
         # kernel.argtypes = (cl.cl_int, cl.cl_int, cl.cl_int, cl.cl_mem, cl.cl_mem, cl.cl_mem)
@@ -236,16 +235,27 @@ class NodeCLKernel:
 
     kernels = {}
 
+    # TODO: class_from_json() class method
+
     def _builder(self):
         # Build function definition values
         # Save function signature
         # Find array dimensions from either output or input
         pstr = []
         signature = [cl.cl_int, cl.cl_int]
+
+        # Add parameters
+        for k, v in self.params.items():
+            signature.append(self.cl_types[v][1])
+            pstr.append(f"const {v} {k}")
+            pstr.append(",\n")
+
+        # Add input and output arrays
         array_or_image = [("const", ""), ("__read_only", "__write_only")]
         shape_sources = set(["float2d", "image"])
         self.shape_source = ("", None)
         for i, (k, v) in enumerate(self.inputs.items()):
+            assert v == "image" or v == "float2d"
             signature.append(self.cl_types[v][1])
             if v in shape_sources:
                 self.shape_source = (0, i)
@@ -254,6 +264,7 @@ class NodeCLKernel:
             pstr.append(",\n")
 
         for i, (k, v) in enumerate(self.outputs.items()):
+            assert v == "image" or v == "float2d"
             signature.append(self.cl_types[v][1])
             if v in shape_sources:
                 self.shape_source = (1, i)
@@ -268,6 +279,7 @@ class NodeCLKernel:
 
         # Build kernel definition
         src = f"""
+        #define POW2(a) ((a) * (a))
         #define READP(input,loc) read_imagef(input, sampler, loc)
         #define READF(input,loc) input[loc.x + loc.y * width]
         #define WRITEP(output,loc,value) write_imagef(output, loc, value)
@@ -283,56 +295,53 @@ class NodeCLKernel:
                 CLK_FILTER_NEAREST;
             const int gx = get_global_id(0), gy = get_global_id(1);
             const int2 loc = (int2)(gx, gy);
-            // const int width = get_image_width(output), height = get_image_height(output);
             {self.source}
         }}
         """
         # print(src)
         return cl_builder.build(self.kernel_name, src, tuple(signature))
 
-    def __init__(self, seamless=True):
+    def __init__(self, seamless=True, lazy=False):
         self.signature = None
         self.kernel = None
+        self._operational = False
 
         # Check all definitions for new kernel exist
         scdict = self.__class__.__dict__
         problem = False
         problem |= "kernel_name" not in scdict
+        problem |= "params" not in scdict
         problem |= "inputs" not in scdict
         problem |= "outputs" not in scdict
         problem |= "source" not in scdict
         if problem:
             raise ValueError(
                 "NodeCLKernel definition missing some required parameters. "
-                "[kernel_name, inputs, outputs, source]"
+                "[kernel_name, params, inputs, outputs, source]"
             )
 
         # Check no name collisions
         if self.kernel_name in NodeCLKernel.kernels:
             raise ValueError("NodeCLKernel kernel name already exists. ")
 
+        # Option to init class now and build kernel later (lazily)
+        if not lazy:
+            self._lazy_init()
+
+    def _lazy_init(self):
         self.kernel = self._builder()
         NodeCLKernel.kernels[self.kernel_name] = self.kernel
+        self._operational = True
 
     def run(self, params, inputs, outputs):
+        if not self._operational:
+            self._lazy_init()
         choice, loc = self.shape_source
         s = (inputs, outputs)[choice][loc].shape
         cl_builder.run(
             self.kernel, params, [i.data for i in inputs], [o.data for o in outputs], shape=s
         )
 
-
-gs_def = {
-    "kernel_name": "grayscale",
-    "params": {},
-    "inputs": {"input": "image"},
-    "outputs": {"output": "image"},
-    "source": """
-    float4 px = READP(input, loc);
-    float g = px.x * 0.2989 + px.y * 0.5870 + px.z * 0.1140;
-    WRITEP(output, loc, (float4)(g, g, g, px.w));
-    """,
-}
 
 # Turn every JSON file in cl_nodes folder into OpenCL functions
 cl_nodes = {}
@@ -343,7 +352,7 @@ for bpath in glob.glob("cl_nodes/*"):
     with open(bpath, "r") as jf:
         jres = json.loads(jf.read())
     jres["source"] = "\n".join(jres["source"])
-    cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), jres)()
+    cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), jres)(lazy=True)
 
 
 def grayscale(ssp):
@@ -441,7 +450,7 @@ def bilateral_cl(pix, radius, preserve):
 
     src = """
     #define POW2(a) ((a) * (a))
-    kernel void bilateral(
+    kernel void bbilateral(
         const float radius,
         const float preserve,
         __read_only image2d_t input,
@@ -488,7 +497,7 @@ def bilateral_cl(pix, radius, preserve):
         write_imagef(output, (int2)(gidx,gidy), accumulated / count);
     }
     """
-    blr = cl_builder.build("bilateral", src, (cl.cl_float, cl.cl_float, cl.cl_image, cl.cl_image))
+    blr = cl_builder.build("bbilateral", src, (cl.cl_float, cl.cl_float, cl.cl_image, cl.cl_image))
     img = cl_builder.new_image_from_ndarray(pix)
     out = cl_builder.new_image(img.width, img.height)
     cl_builder.run(blr, [radius, preserve], (img,), out)
