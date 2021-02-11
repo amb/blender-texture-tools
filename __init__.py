@@ -204,6 +204,7 @@ class CLDev:
         assert type(shape[0]) == int
         assert shape[1] % 8 == 0, "Input image height must be divisible by 8"
         assert shape[0] % 8 == 0, "Input image width must be divisible by 8"
+        # width, height, params, inputs, outputs
         run_evt = kernel(shape[0], shape[1], *params, *inputs, *outputs).on(
             self.queue, offset=(0, 0), gsize=shape, lsize=(8, 8)
         )
@@ -359,56 +360,9 @@ def gauss_curve(x):
 
 
 def gaussian_repeat_cl(img, out, s):
-    SAMPLER_DEF = """
-    const sampler_t sampler = \
-        CLK_NORMALIZED_COORDS_FALSE |
-        CLK_ADDRESS_CLAMP_TO_EDGE |
-        CLK_FILTER_NEAREST;
-    const int x = get_global_id(0), y = get_global_id(1);
-    """
-
     # TODO: store local pass & barrier(CLK_LOCAL_MEM_FENCE);
-    # https://scicomp.stackexchange.com/questions/8232/how-to-use-multiple-passes-in-opencl
-    def _builder(name, core):
-        return cl_builder.build(
-            name,
-            """
-            #define POW2(a) ((a) * (a))
-            __kernel void {NAME}(
-                const int width,
-                const int height,
-                const int s,
-                __read_only image2d_t input,
-                __write_only image2d_t output)
-            {{
-                {SAMPLER}
-                float4 color = (float4)0.0f;
-                float4 accum = (float4)0.0f;
-                float gval = 0.0f;
-                float w = read_imagef(input, sampler, (int2)(x, y)).w;
-                for (int i=-s;i<=s;i++)  {{
-                    gval = exp(-0.5f * ((float)POW2(i)) / (float)s);
-                    color += read_imagef(input, sampler, (int2)({CORE})) * gval;
-                    accum += gval;
-                }}
-                color /= accum;
-                write_imagef(output, (int2)(x,y), (float4)(color.xyz, w));
-            }}
-            """.format(
-                SAMPLER=SAMPLER_DEF, CORE=core, NAME=name
-            ),
-            (cl.cl_int, cl.cl_int, cl.cl_int, cl.cl_image, cl.cl_image),
-        )
-
-    # Horizontal gaussian blur wraparound
-    kh = _builder("gaussian_h", "((x+i)+width)%width,y")
-
-    # Vertical gaussian blur wraparound
-    kv = _builder("gaussian_v", "x,((y+i)+height)%height")
-
-    # gc_c = cl_builder.to_buffer(gauss_curve(s))
-    cl_builder.run(kh, [s], [img.data], [out.data], shape=img.shape)
-    cl_builder.run(kv, [s], [out.data], [img.data], shape=img.shape)
+    cl_nodes["gaussian_h"].run([s], [img], [out])
+    cl_nodes["gaussian_v"].run([s], [out], [img])
     return (img, out)
 
 
@@ -423,60 +377,9 @@ def gaussian_repeat(pix, s):
 
 def bilateral_cl(pix, radius, preserve):
     "Bilateral filter, OpenCL implementation"
-
-    src = """
-    #define POW2(a) ((a) * (a))
-    kernel void bbilateral(
-        const float radius,
-        const float preserve,
-        __read_only image2d_t input,
-        __write_only image2d_t output
-    )
-    {
-        int gidx       = get_global_id(0);
-        int gidy       = get_global_id(1);
-        const sampler_t sampler = \
-            CLK_NORMALIZED_COORDS_FALSE |
-            CLK_ADDRESS_CLAMP_TO_EDGE |
-            CLK_FILTER_NEAREST;
-
-        int n_radius   = ceil(radius);
-        int dst_width  = get_global_size(0);
-        int src_width  = dst_width + n_radius * 2;
-
-        int u, v, i, j;
-
-        float4 center_pix =
-            read_imagef(input, sampler, (int2)(gidx, gidy));
-
-        float4 accumulated = 0.0f;
-        float4 tempf       = 0.0f;
-        float  count       = 0.0f;
-        float  diff_map, gaussian_weight, weight;
-
-        for (v = -n_radius;v <= n_radius; ++v) {
-            for (u = -n_radius;u <= n_radius; ++u) {
-                tempf = read_imagef(input, sampler, (int2)(gidx + u, gidy + v));
-                diff_map = exp (
-                    - (   POW2(center_pix.x - tempf.x)
-                        + POW2(center_pix.y - tempf.y)
-                        + POW2(center_pix.z - tempf.z))
-                    * preserve);
-
-                gaussian_weight = exp( - 0.5f * (POW2(u) + POW2(v)) / radius);
-                weight = diff_map * gaussian_weight;
-
-                accumulated += tempf * weight;
-                count += weight;
-            }
-        }
-        write_imagef(output, (int2)(gidx,gidy), accumulated / count);
-    }
-    """
-    blr = cl_builder.build("bbilateral", src, (cl.cl_float, cl.cl_float, cl.cl_image, cl.cl_image))
     img = cl_builder.new_image_from_ndarray(pix)
     out = cl_builder.new_image(img.width, img.height)
-    cl_builder.run(blr, [radius, preserve], (img,), out)
+    cl_nodes["bilateral"].run([radius, preserve], [img], [out])
     return out.to_numpy()
 
 
@@ -878,6 +781,8 @@ def normals_simple(pix, source):
     src = """
     #define READP(x,y) read_imagef(input, sampler, (int2)(x, y))
     kernel void height_to_normals(
+        const int width,
+        const int height,
         const float steepness,
         __read_only image2d_t input,
         __write_only image2d_t output
@@ -912,18 +817,20 @@ def normals_simple(pix, source):
         grad /= l;
 
         // from pythagoras
-        float height;
-        height = l < 1.0f ? sqrt(1.0f - l*l) : 0.0f;
+        float hg;
+        hg = l < 1.0f ? sqrt(1.0f - l*l) : 0.0f;
 
-        float4 out = (float4)(x_comp*0.5 + 0.5, y_comp*0.5 + 0.5, height*0.5 + 0.5, 1.0f);
+        float4 out = (float4)(x_comp*0.5 + 0.5, y_comp*0.5 + 0.5, hg*0.5 + 0.5, 1.0f);
         write_imagef(output, (int2)(x,y), out);
     }
     """
-    blr = cl_builder.build("height_to_normals", src, (cl.cl_float, cl.cl_image, cl.cl_image))
+    blr = cl_builder.build(
+        "height_to_normals", src, (cl.cl_int, cl.cl_int, cl.cl_float, cl.cl_image, cl.cl_image)
+    )
     img = cl_builder.new_image_from_ndarray(pix)
     out = cl_builder.new_image(img.width, img.height)
     assert steepness != 0.0
-    cl_builder.run(blr, [steepness], (img,), out)
+    cl_builder.run(blr, [steepness], [img.data], [out.data], shape=img.shape)
     return out.to_numpy()
 
 
