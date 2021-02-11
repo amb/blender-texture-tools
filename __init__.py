@@ -22,7 +22,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 26),
+    "version": (0, 1, 27),
     "blender": (2, 81, 0),
 }
 
@@ -122,17 +122,6 @@ class CLFloat2D(CLType):
         return res
 
 
-# CLFloat = NewType("CLFloat", np.float32)
-# CLInt = NewType("CLInt", np.int32)
-
-# class CLInt2D:
-#     def __init__(self, w, h, a):
-#         assert a.dtype == np.int32
-#         self.data = a
-#         self.width = w
-#         self.height = h
-
-
 class CLDev:
     """ OpenCL device class for 2D-3D image array processing """
 
@@ -215,7 +204,7 @@ class CLDev:
         assert type(shape[0]) == int
         assert shape[1] % 8 == 0, "Input image height must be divisible by 8"
         assert shape[0] % 8 == 0, "Input image width must be divisible by 8"
-        run_evt = kernel(shape[1], shape[0], *params, *inputs, *outputs).on(
+        run_evt = kernel(shape[0], shape[1], *params, *inputs, *outputs).on(
             self.queue, offset=(0, 0), gsize=shape, lsize=(8, 8)
         )
         run_evt.wait()
@@ -361,22 +350,6 @@ def grayscale(ssp):
     return out.to_numpy()
 
 
-def linear_to_srgb(c, clamp=True):
-    "linear sRGB to sRGB"
-    assert c.dtype == np.float32
-    srgb = np.where(c < 0.0031308, c * 12.92, 1.055 * np.pow(c, 1.0 / 2.4) - 0.055)
-    if clamp:
-        srgb[srgb > 1.0] = 1.0
-        srgb[srgb < 0.0] = 0.0
-    return srgb
-
-
-def srgb_to_linear(c):
-    "sRGB to linear sRGB"
-    assert c.dtype == np.float32
-    return np.where(c >= 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
-
-
 @functools.lru_cache(maxsize=128)
 def gauss_curve(x):
     # gaussian with 0.01831 at last
@@ -392,15 +365,18 @@ def gaussian_repeat_cl(img, out, s):
         CLK_ADDRESS_CLAMP_TO_EDGE |
         CLK_FILTER_NEAREST;
     const int x = get_global_id(0), y = get_global_id(1);
-    const int width = get_image_width(output), height = get_image_height(output);
     """
 
+    # TODO: store local pass & barrier(CLK_LOCAL_MEM_FENCE);
+    # https://scicomp.stackexchange.com/questions/8232/how-to-use-multiple-passes-in-opencl
     def _builder(name, core):
         return cl_builder.build(
             name,
             """
             #define POW2(a) ((a) * (a))
             __kernel void {NAME}(
+                const int width,
+                const int height,
                 const int s,
                 __read_only image2d_t input,
                 __write_only image2d_t output)
@@ -421,7 +397,7 @@ def gaussian_repeat_cl(img, out, s):
             """.format(
                 SAMPLER=SAMPLER_DEF, CORE=core, NAME=name
             ),
-            (cl.cl_int, cl.cl_image, cl.cl_image),
+            (cl.cl_int, cl.cl_int, cl.cl_int, cl.cl_image, cl.cl_image),
         )
 
     # Horizontal gaussian blur wraparound
@@ -431,8 +407,8 @@ def gaussian_repeat_cl(img, out, s):
     kv = _builder("gaussian_v", "x,((y+i)+height)%height")
 
     # gc_c = cl_builder.to_buffer(gauss_curve(s))
-    cl_builder.run(kh, [s], (img,), out)
-    cl_builder.run(kv, [s], (out,), img)
+    cl_builder.run(kh, [s], [img.data], [out.data], shape=img.shape)
+    cl_builder.run(kv, [s], [out.data], [img.data], shape=img.shape)
     return (img, out)
 
 
