@@ -126,7 +126,7 @@ class NodeCLKernel:
         )
 
 
-def load():
+def load(cl_builder):
     # Turn every JSON file in cl_nodes folder into OpenCL functions
     cl_nodes = {}
     for bpath in glob.glob("cl_nodes/*"):
@@ -136,5 +136,7 @@ def load():
         with open(bpath, "r") as jf:
             jres = json.loads(jf.read())
         jres["source"] = "\n".join(jres["source"])
-        cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), jres)(lazy=True)
+        cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), jres)(
+            builder=cl_builder, lazy=True
+        )
     return cl_nodes
