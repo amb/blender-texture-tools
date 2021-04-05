@@ -9,6 +9,7 @@ class NodeCLKernel:
         "float": ("float", cl.cl_float),
         "int": ("int", cl.cl_int),
         "float2d": ("__global float*", cl.cl_mem),
+        "float1d": ("__global float*", cl.cl_mem),
         # "int2d": ("__global int*", cl.cl_mem),
         "image": ("image2d_t", cl.cl_image),
     }

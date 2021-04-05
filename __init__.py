@@ -40,8 +40,8 @@ from .cl_abstraction import CLDev
 from .json_loader import load as cl_load
 
 cl_builder = CLDev(0)
-
 cl_nodes = cl_load(cl_builder)
+
 
 def grayscale(ssp):
     out = cl_builder.new_image(ssp.shape[1], ssp.shape[0])
