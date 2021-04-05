@@ -1,8 +1,10 @@
 from . import pycl as cl
 import glob
-import json
+# import json
+import toml
 import os
 
+# TODO: this is pretty unmaintainable. Fix
 
 class NodeCLKernel:
     cl_types = {
@@ -26,7 +28,7 @@ class NodeCLKernel:
         signature = [cl.cl_int, cl.cl_int]
 
         # Add parameters
-        for k, v in self.params.items():
+        for k, v in self.cl_def["params"].items():
             signature.append(self.cl_types[v][1])
             pstr.append(f"const {v} {k}")
             pstr.append(",\n")
@@ -35,7 +37,7 @@ class NodeCLKernel:
         array_or_image = [("const", ""), ("__read_only", "__write_only")]
         shape_sources = set(["float2d", "image"])
         self.shape_source = ("", None)
-        for i, (k, v) in enumerate(self.inputs.items()):
+        for i, (k, v) in enumerate(self.cl_def["inputs"].items()):
             assert v == "image" or v == "float2d"
             signature.append(self.cl_types[v][1])
             if v in shape_sources:
@@ -44,7 +46,7 @@ class NodeCLKernel:
             pstr.append(f"{a[0]} {self.cl_types[v][0]} {k}")
             pstr.append(",\n")
 
-        for i, (k, v) in enumerate(self.outputs.items()):
+        for i, (k, v) in enumerate(self.cl_def["outputs"].items()):
             assert v == "image" or v == "float2d"
             signature.append(self.cl_types[v][1])
             if v in shape_sources:
@@ -65,7 +67,7 @@ class NodeCLKernel:
         #define READF(input,loc) input[loc.x + loc.y * width]
         #define WRITEP(output,loc,value) write_imagef(output, loc, value)
         #define WRITEF(output,loc,value) output[loc.x + loc.y * width] = value
-        __kernel void {self.kernel_name}(
+        __kernel void {self.cl_def["kernel"]["name"]}(
             const int width,
             const int height,
             {"".join(pstr)})
@@ -76,28 +78,31 @@ class NodeCLKernel:
                 CLK_FILTER_NEAREST;
             const int gx = get_global_id(0), gy = get_global_id(1);
             const int2 loc = (int2)(gx, gy);
-            {self.source}
+            {self.cl_def["kernel"]["source"]}
         }}
         """
         # print(src)
-        return self.cl_builder.build(self.kernel_name, src, tuple(signature))
+        return self.cl_builder.build(self.cl_def["kernel"]["name"], src, tuple(signature))
 
-    def __init__(self, builder=None, seamless=True, lazy=False):
+    def __init__(self, definition=None, builder=None, seamless=True, lazy=False):
         self.signature = None
         self.kernel = None
         self._operational = False
 
+        assert definition is not None
         assert builder is not None
         self.cl_builder = builder
+        self.cl_def = definition
 
         # Check all definitions for new kernel exist
-        scdict = self.__class__.__dict__
+        scdict = definition
         problem = False
-        problem |= "kernel_name" not in scdict
+        problem |= "kernel" not in scdict
+        problem |= "source" not in scdict["kernel"]
+        problem |= "name" not in scdict["kernel"]
         problem |= "params" not in scdict
         problem |= "inputs" not in scdict
         problem |= "outputs" not in scdict
-        problem |= "source" not in scdict
         if problem:
             raise ValueError(
                 "NodeCLKernel definition missing some required parameters. "
@@ -105,7 +110,7 @@ class NodeCLKernel:
             )
 
         # Check no name collisions
-        if self.kernel_name in NodeCLKernel.kernels:
+        if self.cl_def["kernel"]["name"] in NodeCLKernel.kernels:
             raise ValueError("NodeCLKernel kernel name already exists. ")
 
         # Option to init class now and build kernel later (lazily)
@@ -114,7 +119,7 @@ class NodeCLKernel:
 
     def _lazy_init(self):
         self.kernel = self._builder()
-        NodeCLKernel.kernels[self.kernel_name] = self.kernel
+        NodeCLKernel.kernels[self.cl_def["kernel"]["name"]] = self.kernel
         self._operational = True
 
     def run(self, params, inputs, outputs):
@@ -128,16 +133,15 @@ class NodeCLKernel:
 
 
 def load(cl_builder):
-    # Turn every JSON file in cl_nodes folder into OpenCL functions
+    # Turn every TOML file in cl_nodes folder into OpenCL functions
     cl_nodes = {}
-    for bpath in glob.glob("cl_nodes/*"):
+    for bpath in glob.glob("cl_nodes/*.toml"):
         bname = os.path.basename(bpath)
         node_name = "".join(bname.split(".")[:-1])
 
         with open(bpath, "r") as jf:
-            jres = json.loads(jf.read())
-        jres["source"] = "\n".join(jres["source"])
-        cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), jres)(
-            builder=cl_builder, lazy=True
+            jres = toml.load(jf)
+        cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), {})(
+            definition=jres, builder=cl_builder, lazy=True
         )
     return cl_nodes
