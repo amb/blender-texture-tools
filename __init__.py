@@ -37,7 +37,7 @@ import importlib
 importlib.reload(image_ops)
 
 from .cl_abstraction import CLDev
-from .json_loader import load as cl_load
+from .toml_loader import load as cl_load
 
 cl_builder = CLDev(0)
 cl_nodes = cl_load(cl_builder)

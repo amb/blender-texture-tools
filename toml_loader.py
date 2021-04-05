@@ -1,10 +1,12 @@
 from . import pycl as cl
 import glob
+
 # import json
 import toml
 import os
 
 # TODO: this is pretty unmaintainable. Fix
+
 
 class NodeCLKernel:
     cl_types = {
@@ -136,12 +138,17 @@ def load(cl_builder):
     # Turn every TOML file in cl_nodes folder into OpenCL functions
     cl_nodes = {}
     for bpath in glob.glob("cl_nodes/*.toml"):
-        bname = os.path.basename(bpath)
-        node_name = "".join(bname.split(".")[:-1])
+        try:
+            bname = os.path.basename(bpath)
+            node_name = "".join(bname.split(".")[:-1])
 
-        with open(bpath, "r") as jf:
-            jres = toml.load(jf)
-        cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), {})(
-            definition=jres, builder=cl_builder, lazy=True
-        )
+            with open(bpath, "r") as jf:
+                jres = toml.load(jf)
+            cl_nodes[node_name] = type("CL_" + node_name.capitalize(), (NodeCLKernel,), {})(
+                definition=jres, builder=cl_builder, lazy=True
+            )
+        except ValueError as e:
+            print(f"Failed loading {bpath}:")
+            print(e)
+            assert node_name not in cl_nodes
     return cl_nodes
