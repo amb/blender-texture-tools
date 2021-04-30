@@ -34,6 +34,8 @@ from . import pycl as cl
 from . import image_ops
 import importlib
 
+from .oklab import linear_to_srgb, srgb_to_linear
+
 importlib.reload(image_ops)
 
 from .cl_abstraction import CLDev
@@ -611,7 +613,9 @@ def gauss_seidel_cl(w, h, h2, target, inp, outp):
     )
     assert w % 8 == 0, "Image width must be divisible by 8"
     assert h % 8 == 0, "Image width must be divisible by 8"
-    cl_builder.run_buffer(cth, [w, h, h2, inp, target], outp, shape=(h, w))
+    # cl_builder.run_buffer(cth, [w, h, h2, inp, target], outp, shape=(h, w))
+    # kernel, params, inputs, outputs
+    cl_builder.run(cth, [h2], [inp, target], [outp], shape=(h, w))
 
 
 def curvature_to_height(image, h2, iterations=2000):
@@ -638,7 +642,7 @@ def curvature_to_height(image, h2, iterations=2000):
     return np.dstack([u, u, u, image[..., 3]])
 
 
-def normals_to_height(image, iterations=2000, intensity=1.0):
+def normals_to_height(image, iterations=2000, intensity=1.0, step=1.0):
     vectors = nmap_to_vectors(image)
     vectors *= intensity
 
@@ -655,8 +659,8 @@ def normals_to_height(image, iterations=2000, intensity=1.0):
     pong = cl_builder.to_buffer(np.zeros_like(target))
 
     for ic in range(iterations):
-        gauss_seidel_cl(w, h, 1.0, f, ping, pong)
-        gauss_seidel_cl(w, h, 1.0, f, pong, ping)
+        gauss_seidel_cl(w, h, step, f, ping, pong)
+        gauss_seidel_cl(w, h, step, f, pong, ping)
 
     res_v, evt = cl.buffer_to_ndarray(cl_builder.queue, ping, like=image[..., 0])
     evt.wait()
@@ -977,6 +981,41 @@ class DoG_IOP(image_ops.ImageOperatorGenerator):
         self.payload = _pl
 
 
+class TextureToNormals_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.props["high_freq"] = bpy.props.FloatProperty(
+            name="High frequency", min=0.0, max=1.0, default=0.1
+        )
+        self.props["mid_freq"] = bpy.props.FloatProperty(
+            name="Mid frequency", min=0.0, max=1.0, default=0.2
+        )
+        self.props["low_freq"] = bpy.props.FloatProperty(
+            name="Low frequency", min=0.0, max=1.0, default=0.7
+        )
+
+        self.prefix = "texture_to_normals"
+        self.info = "Texture to Normals"
+        self.category = "Advanced"
+
+        def _pl(self, image, context):
+            # imgg = gaussian_repeat(image, 4)
+            imgg = image
+
+            g = grayscale(imgg)
+            b = curvature_to_height(imgg, 0.5, iterations=100)
+            c = curvature_to_height(imgg, 0.5, iterations=1000)
+
+            d = normals_simple(
+                g * self.high_freq + b * self.mid_freq + c * self.low_freq, "Luminance"
+            )
+            d = normals_to_height(d, iterations=500, step=0.5)
+            d = normals_simple(d, "Luminance")
+            # d = srgb_to_linear(d)
+            return d
+
+        self.payload = _pl
+
+
 class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["style"] = bpy.props.EnumProperty(
@@ -1212,14 +1251,6 @@ class NormalizeTangents_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Make all tangents length 1"
         self.category = "Normals"
         self.payload = lambda self, image, context: normalize_tangents(image)
-
-
-# class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
-#     def generate(self):
-#         self.prefix = "image_to_material"
-#         self.info = "Create magic material from image"
-#         self.category = "Magic"
-#         self.payload = lambda self, image, context: image_to_material(image)
 
 
 # additional_classes = [BTT_InstallLibraries, BTT_AddonPreferences]

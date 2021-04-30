@@ -157,15 +157,15 @@ class ImageOperator(master_ops.MacroOperator):
         else:
             target_image = image
 
-        input_pixels = np.empty(len(image.pixels), dtype=np.float32)
+        input_pixels = np.empty(len(source_image.pixels), dtype=np.float32)
 
-        image.pixels.foreach_get(input_pixels)
+        source_image.pixels.foreach_get(input_pixels)
         input_pixels = input_pixels.reshape(source_image.size[1], source_image.size[0], 4)
 
         # if ctt.global_linear:
         #     input_pixels = srgb_to_linear(input_pixels)
-        with utils.Profile_this(lines=10):
-            result = self.payload(input_pixels, context)
+        # with utils.Profile_this(lines=10):
+        result = self.payload(input_pixels, context)
         # if ctt.global_linear:
         #     result = linear_to_srgb(result, clamp=True)
 
