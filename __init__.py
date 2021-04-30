@@ -29,7 +29,10 @@ bl_info = {
 import bpy  # noqa
 import functools
 import numpy as np
+import random
 from . import pycl as cl
+
+rnd = random.random
 
 from . import image_ops
 import importlib
@@ -49,6 +52,13 @@ def grayscale(ssp):
     out = cl_builder.new_image(ssp.shape[1], ssp.shape[0])
     cl_nodes["grayscale"].run([], [cl_builder.new_image_from_ndarray(ssp)], [out])
     return out.to_numpy()
+
+
+def rgb_to_luminance(c):
+    r = c[..., 0]
+    g = c[..., 1]
+    b = c[..., 2]
+    return 0.2989 * r + 0.5870 * g + 0.1140 * b
 
 
 @functools.lru_cache(maxsize=128)
@@ -1168,6 +1178,83 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
         self.category = "Advanced"
         self.force_numpy = True
         self.payload = lambda self, image, context: gimpify(image)
+
+
+class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "knife_seamless"
+        self.info = "Knife seamless"
+        self.category = "Basic"
+
+        # def diffblocks(a, b):
+        #     ta = rgb_to_luminance(a)
+        #     tb = rgb_to_luminance(b)
+        #     return np.abs(ta - tb)
+
+        def diffblocks(a, b):
+            # ta = rgb_to_luminance(a)
+            # tb = rgb_to_luminance(b)
+            return rgb_to_luminance(np.abs(a - b))
+
+        def findmin(ar, loc, step):
+            minloc = loc
+            for x in range(-step, step + 1):
+                if loc + x >= 0 and loc + x < len(ar) and ar[loc + x] < ar[minloc]:
+                    minloc = loc + x
+            return minloc
+
+        def copy_to_v(image, img_orig, sr, rv, y):
+            w = image.shape[1]
+            hw = w // 2
+            image[y, hw - sr : hw - sr + rv, :] = img_orig[y, w - 2 * sr : w - 2 * sr + rv, :]
+            r2 = sr * 2 - rv
+            image[y, hw + sr - r2 : hw + sr, :] = img_orig[y, sr * 2 - r2 : sr * 2, :]
+
+        def copy_to_h(image, img_orig, sr, rv, y):
+            w = image.shape[0]
+            hw = w // 2
+            image[hw - sr : hw - sr + rv, y, :] = img_orig[w - 2 * sr : w - 2 * sr + rv, y, :]
+            r2 = sr * 2 - rv
+            image[hw + sr - r2 : hw + sr, y, :] = img_orig[sr * 2 - r2 : sr * 2, y, :]
+
+        def _pl(self, image, context):
+            h, w = image.shape[0], image.shape[1]
+            sr = 80
+            hw = w // 2
+            step = 2
+
+            # -- vertical cut
+            img_orig = image.copy()
+
+            # right on left
+            image[:, : hw + sr, :] = img_orig[:, hw - sr :, :]
+
+            # left on right
+            image[:, hw - sr :, :] = img_orig[:, : hw + sr, :]
+
+            abr = diffblocks(img_orig[0, -(2 * sr) :, :], img_orig[0, : sr * 2, :])
+            rv = np.argmin(abr)
+            for y in range(h):
+                abr = diffblocks(img_orig[y, -(2 * sr) :, :], img_orig[y, : sr * 2, :])
+                rv = findmin(abr, rv, step)
+                copy_to_v(image, img_orig, sr, rv, y)
+
+            # -- horizontal cut
+            img_orig = image.copy()
+            hw = h // 2
+            image[: hw + sr, ...] = img_orig[hw - sr :, ...]
+            image[hw - sr :, ...] = img_orig[: hw + sr, ...]
+
+            abr = diffblocks(img_orig[-(2 * sr) :, 0, :], img_orig[: sr * 2, 0, :])
+            rv = np.argmin(abr)
+            for x in range(w):
+                abr = diffblocks(img_orig[-(2 * sr) :, x, :], img_orig[: sr * 2, x, :])
+                rv = findmin(abr, rv, step)
+                copy_to_h(image, img_orig, sr, rv, x)
+
+            return image
+
+        self.payload = _pl
 
 
 class HistogramSeamless_IOP(image_ops.ImageOperatorGenerator):
