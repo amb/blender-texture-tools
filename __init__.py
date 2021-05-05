@@ -1183,8 +1183,11 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
 class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "knife_seamless"
-        self.info = "Knife seamless"
+        self.info = "Optimal knife cut into seamless"
         self.category = "Basic"
+
+        self.props["step"] = bpy.props.IntProperty(name="Step", min=1, max=16, default=3)
+        self.props["margin"] = bpy.props.IntProperty(name="Margin", min=4, max=256, default=40)
 
         # def diffblocks(a, b):
         #     ta = rgb_to_luminance(a)
@@ -1219,9 +1222,10 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
 
         def _pl(self, image, context):
             h, w = image.shape[0], image.shape[1]
-            sr = 80
             hw = w // 2
-            step = 2
+
+            sr = self.margin
+            step = self.step
 
             # -- vertical cut
             img_orig = image.copy()
