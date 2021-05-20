@@ -947,8 +947,12 @@ class CropToSquare_IOP(image_ops.ImageOperatorGenerator):
             if w > h:
                 w = h
 
-            xt = w // 2 - 1
-            yt = w // 2 - 1
+            # make compatible with CL calcs
+            w = w - (w % 8)
+            h = h - (h % 8)
+
+            xt = w // 2
+            yt = w // 2
 
             # crop to center
             image = image[offy - yt : offy + yt, offx - xt : offx + xt]
