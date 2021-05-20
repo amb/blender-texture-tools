@@ -111,7 +111,6 @@ class PanelBuilder:
 
         # individual categories (each category can have one or more operators)
         def ptbuild2(this, cat, parent_name):
-
             draw_ops = list(this.draw_order[cat])
 
             class _pt_tmp(bpy.types.Panel):
@@ -221,7 +220,6 @@ class OperatorGenerator:
         self.prefix = ""
         self.info = ""
         self.category = ""
-        self.always_open = False
 
     def init_end(self):
         self.name = "".join(i.capitalize() for i in self.prefix.split("_"))

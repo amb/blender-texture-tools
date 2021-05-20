@@ -122,22 +122,6 @@ def create(lc, additional_classes):
     return pbuild.register_params, pbuild.unregister_params
 
 
-def linear_to_srgb(c, clamp=True):
-    "linear sRGB to sRGB"
-    assert c.dtype == np.float32
-    srgb = np.where(c < 0.0031308, c * 12.92, 1.055 * (c ** (1.0 / 2.4)) - 0.055)
-    if clamp:
-        srgb[srgb > 1.0] = 1.0
-        srgb[srgb < 0.0] = 0.0
-    return srgb
-
-
-def srgb_to_linear(c):
-    "sRGB to linear sRGB"
-    assert c.dtype == np.float32
-    return np.where(c >= 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
-
-
 class ImageOperator(master_ops.MacroOperator):
     def payload(self, image, context):
         pass
@@ -182,9 +166,7 @@ class ImageOperator(master_ops.MacroOperator):
 class ImageOperatorGenerator(master_ops.OperatorGenerator):
     def __init__(self, master_name):
         self.init_begin(master_name)
-        self.force_numpy = False
         self.generate()
         self.init_end()
         self.name = "IMAGE_OT_" + self.name
         self.create_op(ImageOperator, "image")
-        self.op.force_numpy = self.force_numpy

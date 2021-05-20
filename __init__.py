@@ -22,7 +22,7 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 28),
+    "version": (0, 1, 29),
     "blender": (2, 81, 0),
 }
 
@@ -814,11 +814,6 @@ def normalize_tangents(image):
     return retarr
 
 
-def image_to_material(image):
-    # TODO: Finish this
-    return image
-
-
 class Grayscale_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "grayscale"
@@ -1117,7 +1112,6 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
         self.prefix = "hipass_balance"
         self.info = "Remove low frequencies from the image"
         self.category = "Balance"
-        self.force_numpy = True
         self.payload = lambda self, image, context: hi_pass_balance(image, self.width, self.zoom)
 
 
@@ -1157,7 +1151,6 @@ class HistogramEQ_IOP(image_ops.ImageOperatorGenerator):
         self.prefix = "histogram_eq"
         self.info = "Histogram equalization"
         self.category = "Advanced"
-        self.force_numpy = True
         self.payload = lambda self, image, context: hgram_equalize(image, self.intensity, 0.5)
 
 
@@ -1167,7 +1160,6 @@ class Gaussianize_IOP(image_ops.ImageOperatorGenerator):
         self.prefix = "gaussianize"
         self.info = "Gaussianize histogram"
         self.category = "Advanced"
-        self.force_numpy = True
         self.payload = lambda self, image, context: gaussianize(image, NG=self.count)[0]
 
 
@@ -1179,7 +1171,6 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
         self.prefix = "gimp_seamless"
         self.info = "Gimp style seamless image operation"
         self.category = "Advanced"
-        self.force_numpy = True
         self.payload = lambda self, image, context: gimpify(image)
 
 
@@ -1195,7 +1186,7 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
             name="Cut smoothing", min=0, max=64, default=16
         )
         self.props["constrain"] = bpy.props.FloatProperty(
-            name="Middle constraint", min=0.0, max=16.0, default=2.0
+            name="Middle constraint", min=0.0, max=15.0, default=2.0
         )
         # self.props["square"] = bpy.props.BoolProperty(name="To square", default=False)
 
@@ -1209,6 +1200,8 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
                 penalty = 0.0
             # assert np.all(penalty) >= 0.0
             # assert np.all(penalty) <= 1.0
+            # TODO: adding power might be better
+            # return rgb_to_luminance(np.abs(a - b)) ** 2.0 + penalty
             return rgb_to_luminance(np.abs(a - b)) + penalty
 
         def findmin(ar, loc, step):
@@ -1305,7 +1298,6 @@ class HistogramSeamless_IOP(image_ops.ImageOperatorGenerator):
         self.prefix = "histogram_seamless"
         self.info = "Seamless histogram blending"
         self.category = "Advanced"
-        self.force_numpy = True
 
         def _pl(self, image, context):
             gimg, transforms = gaussianize(image)
