@@ -154,7 +154,7 @@ class ImageOperator(master_ops.MacroOperator):
         #     result = linear_to_srgb(result, clamp=True)
 
         if target_image.size[1] != result.shape[0] or target_image.size[0] != result.shape[1]:
-            print("Scaling image")
+            # print("Scaling image")
             target_image.scale(result.shape[1], result.shape[0])
 
         # print(result.dtype, type(result))

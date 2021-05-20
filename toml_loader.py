@@ -2,7 +2,7 @@ from . import pycl as cl
 import glob
 
 # import json
-import toml
+from . import toml
 import os
 
 # TODO: this is pretty unmaintainable. Fix

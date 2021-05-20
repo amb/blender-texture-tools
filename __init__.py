@@ -1170,7 +1170,7 @@ class GimpSeamless_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "gimp_seamless"
         self.info = "Gimp style seamless image operation"
-        self.category = "Advanced"
+        self.category = "Seamless"
         self.payload = lambda self, image, context: gimpify(image)
 
 
@@ -1178,7 +1178,7 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "knife_seamless"
         self.info = "Optimal knife cut into seamless"
-        self.category = "Basic"
+        self.category = "Seamless"
 
         self.props["step"] = bpy.props.IntProperty(name="Step", min=1, max=16, default=3)
         self.props["margin"] = bpy.props.IntProperty(name="Margin", min=4, max=256, default=40)
@@ -1297,7 +1297,7 @@ class HistogramSeamless_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "histogram_seamless"
         self.info = "Seamless histogram blending"
-        self.category = "Advanced"
+        self.category = "Seamless"
 
         def _pl(self, image, context):
             gimg, transforms = gaussianize(image)
@@ -1373,6 +1373,104 @@ class NormalizeTangents_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Make all tangents length 1"
         self.category = "Normals"
         self.payload = lambda self, image, context: normalize_tangents(image)
+
+
+class SaveMaterial_IOP(image_ops.ImageOperatorGenerator):
+    def generate(self):
+        self.prefix = "save_material"
+        self.info = "Material to JSON"
+        self.category = "Materials"
+
+        def _pl(self, image, context):
+            import pprint
+
+            pp = pprint.PrettyPrinter(indent=4)
+
+            mat = bpy.data.materials[0]
+            node_tree = mat.node_tree
+
+            d_nodes = {}
+
+            # TODO: calc max and min bounding box, save center value
+
+            for n in node_tree.nodes.values():
+                d_temp = {}
+
+                d_temp["bl_idname"] = n.bl_idname
+                d_temp["dimensions"] = n.dimensions
+                d_temp["location"] = n.location
+
+                n_inputs = []
+                for i in n.inputs.values():
+                    if len(i.links) == 0:
+                        if hasattr(i, "default_value"):
+                            if i.bl_idname == "NodeSocketFloatFactor":
+                                n_inputs.append((i.name, "float", i.default_value.real))
+                            # elif i.bl_idname == "NodeSocketVector":
+                            #     n_inputs.append((i.name, 'vector', i.default_value.real))
+                            else:
+                                n_inputs.append((i.name, "unknown", None))
+                        else:
+                            n_inputs.append((i.name, "no_default_value", None))
+                    else:
+                        # TODO: input links should always be length 1
+                        for l in i.links:
+                            n_inputs.append((i.name, "node", l.from_node.name, l.from_socket.name))
+                d_temp["inputs"] = n_inputs
+
+                # n_outputs = []
+                # for i in n.outputs.values():
+                #     if len(i.links) == 0:
+                #         continue
+                #     for l in i.links:
+                #         n_outputs.append(l.from_node.name)
+                # d_temp["outputs"] = n_outputs
+
+                d_nodes[n.name] = d_temp
+
+            pp.pprint(d_nodes)
+
+            # ----------------------------------- test mat
+            mat_name = "test"
+
+            # Test if material exists
+            # If it does not exist, create it:
+            mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
+
+            # Enable 'Use nodes':
+            mat.use_nodes = True
+            nodes = mat.node_tree.nodes
+
+            # Remove existing nodes
+            for node in nodes:
+                nodes.remove(node)
+
+            # Create nodes and store them into dict
+            new_nodes = {}
+            for nk, nv in d_nodes.items():
+                node = nodes.new(nv["bl_idname"])
+                node.location = nv["location"]
+                new_nodes[nk] = node
+
+            print("read nodes...")
+
+            for nk, nv in d_nodes.items():
+                for l in nv["inputs"]:
+                    # name, type, value, (from_socket.name)
+                    if l[2] is not None:
+                        if l[1] == "node":
+                            print(l[2], l[3])
+                            mat.node_tree.links.new(
+                                new_nodes[nk].inputs[l[0]], new_nodes[l[2]].outputs[l[3]]
+                            )
+                        elif l[1] == "float":
+                            new_nodes[nk].inputs[l[0]].default_value = l[2]
+
+                # test_group.links.new(node_add.inputs[1], node_less.outputs[0])
+
+            return image
+
+        self.payload = _pl
 
 
 # additional_classes = [BTT_InstallLibraries, BTT_AddonPreferences]
