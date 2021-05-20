@@ -630,6 +630,7 @@ def gauss_seidel_cl(w, h, h2, target, inp, outp):
 
 def curvature_to_height(image, h2, iterations=2000):
     target = image[..., 0]
+    # TODO: from grayscale, not just 1 component
 
     w, h = target.shape[1], target.shape[0]
     f = cl_builder.to_buffer(target)
@@ -1009,11 +1010,9 @@ class TextureToNormals_IOP(image_ops.ImageOperatorGenerator):
 
         def _pl(self, image, context):
             # imgg = gaussian_repeat(image, 4)
-            imgg = image
-
-            g = grayscale(imgg)
-            b = curvature_to_height(imgg, 0.5, iterations=100)
-            c = curvature_to_height(imgg, 0.5, iterations=1000)
+            g = grayscale(image)
+            b = curvature_to_height(g, 0.5, iterations=100)
+            c = curvature_to_height(g, 0.5, iterations=1000)
 
             d = normals_simple(
                 g * self.high_freq + b * self.mid_freq + c * self.low_freq, "Luminance"
@@ -1188,11 +1187,7 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
 
         self.props["step"] = bpy.props.IntProperty(name="Step", min=1, max=16, default=3)
         self.props["margin"] = bpy.props.IntProperty(name="Margin", min=4, max=256, default=40)
-
-        # def diffblocks(a, b):
-        #     ta = rgb_to_luminance(a)
-        #     tb = rgb_to_luminance(b)
-        #     return np.abs(ta - tb)
+        self.props["square"] = bpy.props.BoolProperty(name="To square", default=False)
 
         def diffblocks(a, b):
             # ta = rgb_to_luminance(a)
@@ -1224,39 +1219,48 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
             h, w = image.shape[0], image.shape[1]
             hw = w // 2
 
-            sr = self.margin
+            v_margin = self.margin
+            h_margin = self.margin
             step = self.step
+
+            if self.square:
+                max_space = min(h, w)
+                h_margin += w - max_space
+                v_margin += h - max_space
+
+            new_width = w - h_margin * 2
+            new_height = h - v_margin * 2
 
             # -- vertical cut
             img_orig = image.copy()
 
             # right on left
-            image[:, : hw + sr, :] = img_orig[:, hw - sr :, :]
+            image[:, : hw + v_margin, :] = img_orig[:, hw - v_margin :, :]
 
             # left on right
-            image[:, hw - sr :, :] = img_orig[:, : hw + sr, :]
+            image[:, hw - v_margin :, :] = img_orig[:, : hw + v_margin, :]
 
-            abr = diffblocks(img_orig[0, -(2 * sr) :, :], img_orig[0, : sr * 2, :])
+            abr = diffblocks(img_orig[0, -(2 * v_margin) :, :], img_orig[0, : v_margin * 2, :])
             rv = np.argmin(abr)
             for y in range(h):
-                abr = diffblocks(img_orig[y, -(2 * sr) :, :], img_orig[y, : sr * 2, :])
+                abr = diffblocks(img_orig[y, -(2 * v_margin) :, :], img_orig[y, : v_margin * 2, :])
                 rv = findmin(abr, rv, step)
-                copy_to_v(image, img_orig, sr, rv, y)
+                copy_to_v(image, img_orig, v_margin, rv, y)
 
             # -- horizontal cut
             img_orig = image.copy()
             hw = h // 2
-            image[: hw + sr, ...] = img_orig[hw - sr :, ...]
-            image[hw - sr :, ...] = img_orig[: hw + sr, ...]
+            image[: hw + h_margin, ...] = img_orig[hw - h_margin :, ...]
+            image[hw - h_margin :, ...] = img_orig[: hw + h_margin, ...]
 
-            abr = diffblocks(img_orig[-(2 * sr) :, 0, :], img_orig[: sr * 2, 0, :])
+            abr = diffblocks(img_orig[-(2 * h_margin) :, 0, :], img_orig[: h_margin * 2, 0, :])
             rv = np.argmin(abr)
             for x in range(w):
-                abr = diffblocks(img_orig[-(2 * sr) :, x, :], img_orig[: sr * 2, x, :])
+                abr = diffblocks(img_orig[-(2 * h_margin) :, x, :], img_orig[: h_margin * 2, x, :])
                 rv = findmin(abr, rv, step)
-                copy_to_h(image, img_orig, sr, rv, x)
+                copy_to_h(image, img_orig, h_margin, rv, x)
 
-            return image
+            return image[:new_height, :new_width]
 
         self.payload = _pl
 
