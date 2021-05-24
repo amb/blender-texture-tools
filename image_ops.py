@@ -21,15 +21,6 @@ import bpy  # noqa:F401
 
 import numpy as np
 
-CUDA_ACTIVE = False
-# try:
-#     import cupy as cup
-
-#     CUDA_ACTIVE = True
-# except Exception:
-#     CUDA_ACTIVE = False
-#     cup = np
-
 from collections import OrderedDict
 
 from .oklab import linear_to_srgb, srgb_to_linear
@@ -39,18 +30,6 @@ import importlib
 
 importlib.reload(master_ops)
 importlib.reload(utils)
-
-
-# def get_teximage(context):
-#     teximage = None
-#     for area in context.screen.areas:
-#         if area.type == "IMAGE_EDITOR":
-#             teximage = area.spaces.active.image
-#             break
-#     if teximage is not None and teximage.size[1] != 0:
-#         return teximage
-#     else:
-#         return None
 
 
 def get_area_image(context):
@@ -123,8 +102,9 @@ def create(lc, additional_classes):
     return pbuild.register_params, pbuild.unregister_params
 
 
-def context_get_source_target_image(image, context):
+def context_get_source_target_image(context):
     ctt = context.scene.texture_tools
+    image = get_area_image(context)
 
     if ctt.global_source_enum == "defined":
         source_image = ctt.global_source
@@ -160,11 +140,12 @@ def ndarray_to_image(target, pixels, linear_transform=False):
 
 class ImageOperator(master_ops.MacroOperator):
     def payload(self, image, context):
+        # PyLance complains about unreachable code if this is set
+        # assert False, "Empty payload in ImageOperator"
         pass
 
     def execute(self, context):
-        image = get_area_image(bpy.context)
-        source_image, target_image = context_get_source_target_image(image, context)
+        source_image, target_image = context_get_source_target_image(context)
 
         input_pixels = image_to_ndarray(source_image)
 
@@ -172,7 +153,7 @@ class ImageOperator(master_ops.MacroOperator):
         result = self.payload(input_pixels, context)
 
         ndarray_to_image(target_image, result)
-        
+
         return {"FINISHED"}
 
 

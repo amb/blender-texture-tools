@@ -242,6 +242,8 @@ def median_filter(pix, radius):
     #define RADIUS {radius}
     #define READP(x,y) read_imagef(input, sampler, (int2)(x, y))
     kernel void wirth_median_{radius}(
+        const int width,
+        const int height,
         __read_only image2d_t input,
         __write_only image2d_t output)
     {{
@@ -298,10 +300,12 @@ def median_filter(pix, radius):
         write_imagef(output, (int2)(x, y), (float4)(rcol[0], rcol[1], rcol[2], 1.0f));
     }}"""
 
-    k = cl_builder.build("wirth_median_" + repr(radius), src, (cl.cl_image, cl.cl_image))
+    k = cl_builder.build(
+        "wirth_median_" + repr(radius), src, (cl.cl_int, cl.cl_int, cl.cl_image, cl.cl_image)
+    )
     img = cl_builder.new_image_from_ndarray(pix)
     out = cl_builder.new_image(img.width, img.height)
-    cl_builder.run(k, [], (img,), out)
+    cl_builder.run(k, [], [img.data], [out.data], shape=(img.height, img.width))
     return out.to_numpy()
 
 
@@ -814,6 +818,19 @@ def normalize_tangents(image):
     return retarr
 
 
+def texture_to_normals(image, high, mid, low):
+    # imgg = gaussian_repeat(image, 4)
+    g = grayscale(image)
+    b = curvature_to_height(g, 0.5, iterations=100)
+    c = curvature_to_height(g, 0.5, iterations=1000)
+
+    d = normals_simple(g * high + b * mid + c * low, "Luminance")
+    d = normals_to_height(d, iterations=500, step=0.5)
+    d = normals_simple(d, "Luminance")
+    # d = srgb_to_linear(d)
+    return d
+
+
 class Grayscale_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "grayscale"
@@ -1008,18 +1025,17 @@ class TextureToNormals_IOP(image_ops.ImageOperatorGenerator):
         self.category = "Advanced"
 
         def _pl(self, image, context):
-            # imgg = gaussian_repeat(image, 4)
-            g = grayscale(image)
-            b = curvature_to_height(g, 0.5, iterations=100)
-            c = curvature_to_height(g, 0.5, iterations=1000)
+            # # imgg = gaussian_repeat(image, 4)
+            # g = grayscale(image)
+            # b = curvature_to_height(g, 0.5, iterations=100)
+            # c = curvature_to_height(g, 0.5, iterations=1000)
 
-            d = normals_simple(
-                g * self.high_freq + b * self.mid_freq + c * self.low_freq, "Luminance"
-            )
-            d = normals_to_height(d, iterations=500, step=0.5)
-            d = normals_simple(d, "Luminance")
-            # d = srgb_to_linear(d)
-            return d
+            # d = normals_simple(
+            #     g * self.high_freq + b * self.mid_freq + c * self.low_freq, "Luminance"
+            # )
+            # d = normals_to_height(d, iterations=500, step=0.5)
+            # d = normals_simple(d, "Luminance")
+            return texture_to_normals(image, self.high_freq, self.mid_freq, self.low_freq)
 
         self.payload = _pl
 
@@ -1408,12 +1424,28 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
             # pp = pprint.PrettyPrinter(indent=4)
             # pp.pprint(d_nodes)
 
-            # if target_image.size[1] != result.shape[0] or target_image.size[0] != result.shape[1]:
-            #     target_image.scale(result.shape[1], result.shape[0])
+            # ----- Make seamless image
 
             img = image_ops.get_area_image(context)
-            mat.node_tree.nodes['Image Texture.002'].image = img
+            mat.node_tree.nodes["Image Texture.002"].image = img
 
+            # ----- Create normal map image
+            name_normal = img.name + "_n"
+            if name_normal in bpy.data.images:
+                bpy.data.images.remove(bpy.data.images[name_normal])
+                # img_n = bpy.data.images[name_normal]
+                # img_n.scale(img.size[0], img.size[1])
+
+            img_n = img.copy()
+            img_n.name = name_normal
+            img_n.colorspace_settings.name = "Non-Color"
+
+            data_n = image_ops.image_to_ndarray(img_n)
+            image_ops.ndarray_to_image(img_n, texture_to_normals(data_n, 0.1, 0.2, 0.7))
+
+            mat.node_tree.nodes["Image Texture"].image = img_n
+
+            # ----- Create height map
 
             return image
 
