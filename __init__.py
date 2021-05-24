@@ -11,8 +11,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-# Created Date: Monday, July 8th 2019, 8:27:07 am
-# Copyright: Tommi Hyppänen
+# Copyright 2019-2021: Tommi Hyppänen
 
 
 bl_info = {
@@ -1376,11 +1375,15 @@ class NormalizeTangents_IOP(image_ops.ImageOperatorGenerator):
         self.payload = lambda self, image, context: normalize_tangents(image)
 
 
-class SaveMaterial_IOP(image_ops.ImageOperatorGenerator):
+class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.prefix = "save_material"
-        self.info = "Material to JSON"
+        self.prefix = "image_to_material"
+        self.info = "Image to material"
         self.category = "Materials"
+
+        self.props["mat_name"] = bpy.props.StringProperty(
+            name="Name", description="Material name", default="Test"
+        )
 
         def _pl(self, image, context):
             from . import json_material
@@ -1395,16 +1398,22 @@ class SaveMaterial_IOP(image_ops.ImageOperatorGenerator):
             # with open('mat.json', 'w') as out_file:
             #     json.dump(json_out, out_file)
 
-            with open('default_material.json', 'r') as in_file:
+            with open("default_material.json", "r") as in_file:
                 json_in = json.load(in_file)
 
-            mat_name = "test"
-            mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(mat_name)
-            _ = json_material.overwrite_material_from_json(mat, json_in)
+            mat = bpy.data.materials.get(self.mat_name) or bpy.data.materials.new(self.mat_name)
+            json_material.overwrite_material_from_json(mat, json_in)
 
             # import pprint
             # pp = pprint.PrettyPrinter(indent=4)
             # pp.pprint(d_nodes)
+
+            # if target_image.size[1] != result.shape[0] or target_image.size[0] != result.shape[1]:
+            #     target_image.scale(result.shape[1], result.shape[0])
+
+            img = image_ops.get_area_image(context)
+            mat.node_tree.nodes['Image Texture.002'].image = img
+
 
             return image
 

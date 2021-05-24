@@ -32,6 +32,7 @@ CUDA_ACTIVE = False
 
 from collections import OrderedDict
 
+from .oklab import linear_to_srgb, srgb_to_linear
 from .bpy_amb import master_ops
 from .bpy_amb import utils
 import importlib
@@ -40,16 +41,16 @@ importlib.reload(master_ops)
 importlib.reload(utils)
 
 
-def get_teximage(context):
-    teximage = None
-    for area in context.screen.areas:
-        if area.type == "IMAGE_EDITOR":
-            teximage = area.spaces.active.image
-            break
-    if teximage is not None and teximage.size[1] != 0:
-        return teximage
-    else:
-        return None
+# def get_teximage(context):
+#     teximage = None
+#     for area in context.screen.areas:
+#         if area.type == "IMAGE_EDITOR":
+#             teximage = area.spaces.active.image
+#             break
+#     if teximage is not None and teximage.size[1] != 0:
+#         return teximage
+#     else:
+#         return None
 
 
 def get_area_image(context):
@@ -122,44 +123,56 @@ def create(lc, additional_classes):
     return pbuild.register_params, pbuild.unregister_params
 
 
+def context_get_source_target_image(image, context):
+    ctt = context.scene.texture_tools
+
+    if ctt.global_source_enum == "defined":
+        source_image = ctt.global_source
+    else:
+        source_image = image
+
+    if ctt.global_target_enum == "defined":
+        target_image = ctt.global_target
+    else:
+        target_image = image
+
+    return source_image, target_image
+
+
+def image_to_ndarray(source, linear_transform=False):
+    input_pixels = np.empty(len(source.pixels), dtype=np.float32)
+    source.pixels.foreach_get(input_pixels)
+    input_pixels = input_pixels.reshape(source.size[1], source.size[0], 4)
+    if linear_transform:
+        input_pixels = srgb_to_linear(input_pixels)
+
+    return input_pixels
+
+
+def ndarray_to_image(target, pixels, linear_transform=False):
+    if linear_transform:
+        pixels = linear_to_srgb(pixels, clamp=True)
+
+    if target.size[1] != pixels.shape[0] or target.size[0] != pixels.shape[1]:
+        target.scale(pixels.shape[1], pixels.shape[0])
+    target.pixels.foreach_set(np.float32(pixels.ravel()))
+
+
 class ImageOperator(master_ops.MacroOperator):
     def payload(self, image, context):
         pass
 
     def execute(self, context):
         image = get_area_image(bpy.context)
+        source_image, target_image = context_get_source_target_image(image, context)
 
-        ctt = context.scene.texture_tools
+        input_pixels = image_to_ndarray(source_image)
 
-        if ctt.global_source_enum == "defined":
-            source_image = ctt.global_source
-        else:
-            source_image = image
-
-        if ctt.global_target_enum == "defined":
-            target_image = ctt.global_target
-        else:
-            target_image = image
-
-        input_pixels = np.empty(len(source_image.pixels), dtype=np.float32)
-
-        source_image.pixels.foreach_get(input_pixels)
-        input_pixels = input_pixels.reshape(source_image.size[1], source_image.size[0], 4)
-
-        # if ctt.global_linear:
-        #     input_pixels = srgb_to_linear(input_pixels)
         # with utils.Profile_this(lines=10):
         result = self.payload(input_pixels, context)
-        # if ctt.global_linear:
-        #     result = linear_to_srgb(result, clamp=True)
 
-        if target_image.size[1] != result.shape[0] or target_image.size[0] != result.shape[1]:
-            # print("Scaling image")
-            target_image.scale(result.shape[1], result.shape[0])
-
-        # print(result.dtype, type(result))
-        # print(np.max(result), np.min(result))
-        target_image.pixels.foreach_set(np.float32(result.ravel()))
+        ndarray_to_image(target_image, result)
+        
         return {"FINISHED"}
 
 
