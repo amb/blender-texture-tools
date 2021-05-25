@@ -137,7 +137,11 @@ class NodeCLKernel:
 def load(cl_builder):
     # Turn every TOML file in cl_nodes folder into OpenCL functions
     cl_nodes = {}
-    for bpath in glob.glob("cl_nodes/*.toml"):
+    directory = os.path.dirname(os.path.realpath(__file__))
+    glob_filter = os.path.join(directory, "cl_nodes", "*.toml")
+    # for bpath in glob.glob("cl_nodes/*.toml"):
+    print(glob_filter)
+    for bpath in glob.glob(glob_filter):
         try:
             bname = os.path.basename(bpath)
             node_name = "".join(bname.split(".")[:-1])

@@ -42,7 +42,9 @@ importlib.reload(image_ops)
 
 import json
 from .cl_abstraction import CLDev
-from .toml_loader import load as cl_load
+from . import toml_loader
+importlib.reload(toml_loader)
+cl_load = toml_loader.load
 
 cl_builder = CLDev(0)
 cl_nodes = cl_load(cl_builder)
@@ -1512,13 +1514,15 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
             # print(json_out)
 
             # print(bpy.utils.resource_path('LOCAL'))
-            # import os
             # print(os.getcwd())
-
+            # print(bpy.utils.user_resource('SCRIPTS', "addons"))
+            # print(directory)
             # with open('mat.json', 'w') as out_file:
             #     json.dump(json_out, out_file)
 
-            with open("default_material.json", "r") as in_file:
+            import os
+            directory = os.path.dirname(os.path.realpath(__file__))
+            with open(os.path.join(directory, "default_material.json"), "r") as in_file:
                 json_in = json.load(in_file)
 
             mat = bpy.data.materials.get(self.mat_name) or bpy.data.materials.new(self.mat_name)
