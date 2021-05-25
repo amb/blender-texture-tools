@@ -831,6 +831,130 @@ def texture_to_normals(image, high, mid, low):
     return d
 
 
+def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth):
+    def diffblocks(a, b, constrain_middle):
+        l = len(a)
+        if constrain_middle >= 0.0 and constrain_middle <= 15.0:
+            penalty = np.abs(((np.arange(l) - (l - 1) * 0.5) * 2.0 / (l - 1))) ** (
+                constrain_middle + 1.0
+            )
+        else:
+            penalty = 0.0
+        # assert np.all(penalty) >= 0.0
+        # assert np.all(penalty) <= 1.0
+        # TODO: adding power might be better
+        # return rgb_to_luminance(np.abs(a - b)) ** 2.0 + penalty
+        return rgb_to_luminance(np.abs(a - b)) + penalty
+
+    def findmin(ar, loc, step):
+        minloc = loc
+        lar = len(ar)
+        for x in range(-step, step + 1):
+            if loc + x >= 0 and loc + x < lar and ar[loc + x] < ar[minloc]:
+                minloc = loc + x
+        return minloc
+
+    def copy_to_v(image, img_orig, sr, rv, y):
+        w = image.shape[1]
+        hw = w // 2
+        image[y, hw - sr : hw - sr + rv, :] = img_orig[y, w - 2 * sr : w - 2 * sr + rv, :]
+        r2 = sr * 2 - rv
+        image[y, hw + sr - r2 : hw + sr, :] = img_orig[y, sr * 2 - r2 : sr * 2, :]
+
+    def copy_to_h(image, img_orig, sr, rv, y):
+        w = image.shape[0]
+        hw = w // 2
+        image[hw - sr : hw - sr + rv, y, :] = img_orig[w - 2 * sr : w - 2 * sr + rv, y, :]
+        r2 = sr * 2 - rv
+        image[hw + sr - r2 : hw + sr, y, :] = img_orig[sr * 2 - r2 : sr * 2, y, :]
+
+    h, w = image.shape[0], image.shape[1]
+
+    # if self.square:
+    #     max_space = min(h, w)
+    #     h_margin += w - max_space
+    #     v_margin += h - max_space
+
+    # new_width = w
+    # new_height = h
+
+    # Make sure result is divisible by 8
+    v_margin += -(v_margin % 8)
+    h_margin += -(h_margin % 8)
+
+    # -- vertical cut
+    if smooth > 0:
+        smoothed = gaussian_repeat(image, smooth)
+    else:
+        smoothed = image.copy()
+    img_orig = image.copy()
+    hw = w // 2
+
+    # right on left
+    image[:, : hw + h_margin, :] = img_orig[:, hw - h_margin :, :]
+
+    # left on right
+    image[:, hw - h_margin :, :] = img_orig[:, : hw + h_margin, :]
+
+    abr = diffblocks(
+        smoothed[0, -(2 * h_margin) :, :], smoothed[0, : h_margin * 2, :], m_constraint
+    )
+    rv = np.argmin(abr)
+    for y in range(h):
+        abr = diffblocks(
+            smoothed[y, -(2 * h_margin) :, :], smoothed[y, : h_margin * 2, :], m_constraint
+        )
+        rv = findmin(abr, rv, step)
+        copy_to_v(image, img_orig, h_margin, rv, y)
+
+    # -- horizontal cut
+    if smooth > 0:
+        smoothed = gaussian_repeat(image, smooth)
+    else:
+        smoothed = image.copy()
+    img_orig = image.copy()
+    hw = h // 2
+    image[: hw + v_margin, ...] = img_orig[hw - v_margin :, ...]
+    image[hw - v_margin :, ...] = img_orig[: hw + v_margin, ...]
+
+    abr = diffblocks(
+        smoothed[-(2 * v_margin) :, 0, :], smoothed[: v_margin * 2, 0, :], m_constraint
+    )
+    rv = np.argmin(abr)
+    for x in range(w):
+        abr = diffblocks(
+            smoothed[-(2 * v_margin) :, x, :], smoothed[: v_margin * 2, x, :], m_constraint
+        )
+        rv = findmin(abr, rv, step)
+        copy_to_h(image, img_orig, v_margin, rv, x)
+
+    return image[v_margin:-v_margin, h_margin:-h_margin]
+
+
+def crop_to_square(image):
+    h, w = image.shape[0], image.shape[1]
+
+    offx = w // 2
+    offy = h // 2
+
+    if h > w:
+        h = w
+    if w > h:
+        w = h
+
+    # make compatible with CL calcs
+    w = w - (w % 8)
+    h = h - (h % 8)
+
+    xt = w // 2
+    yt = w // 2
+
+    # crop to center
+    image = image[offy - yt : offy + yt, offx - xt : offx + xt]
+
+    return image
+
+
 class Grayscale_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.prefix = "grayscale"
@@ -949,27 +1073,7 @@ class CropToSquare_IOP(image_ops.ImageOperatorGenerator):
         self.category = "Dimensions"
 
         def _pl(self, image, context):
-            h, w = image.shape[0], image.shape[1]
-
-            offx = w // 2
-            offy = h // 2
-
-            if h > w:
-                h = w
-            if w > h:
-                w = h
-
-            # make compatible with CL calcs
-            w = w - (w % 8)
-            h = h - (h % 8)
-
-            xt = w // 2
-            yt = w // 2
-
-            # crop to center
-            image = image[offy - yt : offy + yt, offx - xt : offx + xt]
-
-            return image
+            return crop_to_square(image)
 
         self.payload = _pl
 
@@ -1424,32 +1528,72 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
             # pp = pprint.PrettyPrinter(indent=4)
             # pp.pprint(d_nodes)
 
-            # ----- Make seamless image
+            base_image = image_ops.get_area_image(context)
+            base_data = image_ops.image_to_ndarray(base_image)
 
-            img = image_ops.get_area_image(context)
-            mat.node_tree.nodes["Image Texture.002"].image = img
+            # ----- Crop to square
+            print("Crop image to square")
+            base_data = crop_to_square(base_data)
+            h, w = base_data.shape[:2]
+            print(f"({w}, {h}) after crop")
+            min_dim = min(h, w)
+
+            # ----- Make seamless image
+            print("Make seamless diffuse")
+            # TODO: check this is optimal
+            data_d = hi_pass_balance(base_data, min_dim, min_dim // 2)
+            knife_result = knife_seamless(data_d, h // 3 // 2, w // 3 // 2, 4, 12.0, 8)
+
+            # Save new width and height after seamless knife cut
+            h, w = knife_result.shape[:2]
+            print(f"({w}, {h}) after seamless cut")
+
+            img_d = image_ops.image_create_overwrite(base_image.name + "_d", w, h, "sRGB")
+            image_ops.ndarray_to_image(img_d, knife_result)
+            mat.node_tree.nodes["Image Texture.001"].image = img_d
 
             # ----- Create normal map image
-            name_normal = img.name + "_n"
-            if name_normal in bpy.data.images:
-                bpy.data.images.remove(bpy.data.images[name_normal])
-                # img_n = bpy.data.images[name_normal]
-                # img_n.scale(img.size[0], img.size[1])
-
-            img_n = img.copy()
-            img_n.name = name_normal
-            img_n.colorspace_settings.name = "Non-Color"
-
-            data_n = image_ops.image_to_ndarray(img_n)
-            image_ops.ndarray_to_image(img_n, texture_to_normals(data_n, 0.1, 0.2, 0.7))
-
+            print("Make normal map")
+            img_n = image_ops.image_create_overwrite(base_image.name + "_n", w, h, "Non-Color")
+            image_ops.ndarray_to_image(img_n, texture_to_normals(knife_result, 0.1, 0.2, 0.7))
             mat.node_tree.nodes["Image Texture"].image = img_n
 
             # ----- Create height map
+            print("Make height map for roughness")
+            img_h = image_ops.image_create_overwrite(base_image.name + "_h", w, h, "Non-Color")
+            image_ops.ndarray_to_image(
+                img_h, curvature_to_height(knife_result, 0.5, iterations=500)
+            )
+            mat.node_tree.nodes["Image Texture.002"].image = img_h
+            mat.node_tree.nodes['Invert'].inputs['Fac'].default_value = 0.77
 
             return image
 
         self.payload = _pl
+
+
+# class StoreMaterialTemplate_IOP(image_ops.ImageOperatorGenerator):
+#     def generate(self):
+#         self.prefix = "store_material_template"
+#         self.info = "Store material template"
+#         self.category = "Materials"
+
+#         self.props["mat_name"] = bpy.props.StringProperty(
+#             name="Name", description="Material name", default="Test"
+#         )
+
+#         def _pl(self, image, context):
+#             from . import json_material
+
+#             with open("default_material.json", "w") as out_file:
+#                 json.dump(
+#                     json_material.read_material_nodes_to_json(bpy.data.materials[self.mat_name]),
+#                     out_file,
+#                 )
+
+#             return image
+
+#         self.payload = _pl
 
 
 # additional_classes = [BTT_InstallLibraries, BTT_AddonPreferences]

@@ -120,6 +120,7 @@ def context_get_source_target_image(context):
 
 
 def image_to_ndarray(source, linear_transform=False):
+    assert len(source.pixels) > 0
     input_pixels = np.empty(len(source.pixels), dtype=np.float32)
     source.pixels.foreach_get(input_pixels)
     input_pixels = input_pixels.reshape(source.size[1], source.size[0], 4)
@@ -136,6 +137,33 @@ def ndarray_to_image(target, pixels, linear_transform=False):
     if target.size[1] != pixels.shape[0] or target.size[0] != pixels.shape[1]:
         target.scale(pixels.shape[1], pixels.shape[0])
     target.pixels.foreach_set(np.float32(pixels.ravel()))
+
+
+def image_copy_overwrite(source_image, new_name):
+    """Copy source_image as new_name, destroy existing images"""
+    if new_name in bpy.data.images:
+        bpy.data.images.remove(bpy.data.images[new_name])
+        # img_n = bpy.data.images[name_normal]
+        # img_n.scale(img.size[0], img.size[1])
+
+    img_n = source_image.copy()
+    img_n.name = new_name
+    return img_n
+
+
+def image_create_overwrite(new_name, w, h, itype):
+    """ Possible itypes:
+        ('Filmic Log', 'Linear', 'Linear ACES', 'Non-Color', 'Raw', 'sRGB', 'XYZ') """
+    if new_name in bpy.data.images:
+        bpy.data.images.remove(bpy.data.images[new_name])
+
+    # img_n = bpy.data.images.new(
+    #     name=new_name, width=w, height=h, float_buffer=True, generated_type="BLANK", float=True
+    # )
+    img_n = bpy.data.images.new(new_name, width=w, height=h, alpha=1.0)
+    # Non-Color
+    img_n.colorspace_settings.name = itype
+    return img_n
 
 
 class ImageOperator(master_ops.MacroOperator):
