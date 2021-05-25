@@ -1541,7 +1541,8 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
             # ----- Make seamless image
             print("Make seamless diffuse")
             # TODO: check this is optimal
-            data_d = hi_pass_balance(base_data, min_dim, min_dim // 2)
+            # data_d = hi_pass_balance(base_data, min_dim, min_dim // 2)
+            data_d = hi_pass_balance(base_data, min_dim, min_dim)
             knife_result = knife_seamless(data_d, h // 3 // 2, w // 3 // 2, 4, 12.0, 8)
 
             # Save new width and height after seamless knife cut
