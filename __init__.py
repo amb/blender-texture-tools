@@ -657,7 +657,7 @@ def gauss_seidel_cl(w, h, h2, target, inp, outp):
         (cl.cl_int, cl.cl_int, cl.cl_float, cl.cl_mem, cl.cl_mem, cl.cl_mem),
     )
     assert w % 8 == 0, "Image width must be divisible by 8"
-    assert h % 8 == 0, "Image width must be divisible by 8"
+    assert h % 8 == 0, "Image height must be divisible by 8"
     # cl_builder.run_buffer(cth, [w, h, h2, inp, target], outp, shape=(h, w))
     # kernel, params, inputs, outputs
     cl_builder.run(cth, [h2], [inp, target], [outp], shape=(h, w))
@@ -862,8 +862,8 @@ def texture_to_normals(image, high, mid, low):
     return d
 
 
-def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth):
-    def diffblocks(a, b, constrain_middle):
+def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth, weights):
+    def diffblocks(a, b, constrain_middle, wg):
         l = len(a)
         if constrain_middle >= 0.0 and constrain_middle <= 15.0:
             penalty = np.abs(((np.arange(l) - (l - 1) * 0.5) * 2.0 / (l - 1))) ** (
@@ -873,9 +873,22 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth):
             penalty = 0.0
         # assert np.all(penalty) >= 0.0
         # assert np.all(penalty) <= 1.0
-        # TODO: adding power might be better
-        # return rgb_to_luminance(np.abs(a - b)) ** 2.0 + penalty
-        return rgb_to_luminance(np.abs(a - b)) + penalty
+
+        # diff = np.abs(a - b)
+        diff = a
+
+        # normalize
+        # diff += np.min(diff)
+        # diffm = np.max(diff)
+        # if diffm > 0.0:
+        #     diff /= diffm
+
+        return (
+            diff[..., 0] * weights[0]
+            + diff[..., 1] * weights[1]
+            + diff[..., 2] * weights[2]
+            + penalty
+        )
 
     def findmin(ar, loc, step):
         minloc = loc
@@ -886,11 +899,35 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth):
         return minloc
 
     def copy_to_v(image, img_orig, sr, rv, y):
+        # sr = stripe width / 2, y = stripe location, rv = cut location
         w = image.shape[1]
         hw = w // 2
-        image[y, hw - sr : hw - sr + rv, :] = img_orig[y, w - 2 * sr : w - 2 * sr + rv, :]
-        r2 = sr * 2 - rv
-        image[y, hw + sr - r2 : hw + sr, :] = img_orig[y, sr * 2 - r2 : sr * 2, :]
+        L2 = 16
+        L = L2 * 2
+
+        image[y, hw - sr : hw - sr + rv - L2, :] = img_orig[y, -2 * sr : -2 * sr + rv - L2, :]
+        image[y, hw - sr + rv + L2 : hw + sr, :] = img_orig[y, rv + L2 : sr * 2, :]
+
+        la = hw - sr + rv
+        lb = rv
+
+        # blending between the two border images
+        for i in range(L):
+            l = i - L2
+            d = i / (L - 1)
+
+            lval = img_orig[y, -2 * sr + rv + l, :]
+            rval = img_orig[y, lb + l, :]
+
+            # blend more of the selection which has higher lightness
+            d = d + (rval[..., 0] * d - lval[..., 0] * (1.0 - d)) * 2.0
+
+            if d < 0.0:
+                d = 0.0
+            if d > 1.0:
+                d = 1.0
+
+            image[y, la + l, :] = lval * (1.0 - d) + rval * d
 
     def copy_to_h(image, img_orig, sr, rv, y):
         w = image.shape[0]
@@ -910,8 +947,11 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth):
     # new_height = h
 
     # Make sure result is divisible by 8
-    v_margin += -(v_margin % 8)
-    h_margin += -(h_margin % 8)
+    v_margin += -((h + v_margin) % 16)
+    h_margin += -((w + h_margin) % 16)
+
+    v_margin //= 2
+    h_margin //= 2
 
     # -- vertical cut
     if smooth > 0:
@@ -928,12 +968,12 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth):
     image[:, hw - h_margin :, :] = img_orig[:, : hw + h_margin, :]
 
     abr = diffblocks(
-        smoothed[0, -(2 * h_margin) :, :], smoothed[0, : h_margin * 2, :], m_constraint
+        smoothed[0, -(2 * h_margin) :, :], smoothed[0, : h_margin * 2, :], m_constraint, weights
     )
     rv = np.argmin(abr)
     for y in range(h):
         abr = diffblocks(
-            smoothed[y, -(2 * h_margin) :, :], smoothed[y, : h_margin * 2, :], m_constraint
+            smoothed[y, -(2 * h_margin) :, :], smoothed[y, : h_margin * 2, :], m_constraint, weights
         )
         rv = findmin(abr, rv, step)
         copy_to_v(image, img_orig, h_margin, rv, y)
@@ -949,15 +989,17 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth):
     image[hw - v_margin :, ...] = img_orig[: hw + v_margin, ...]
 
     abr = diffblocks(
-        smoothed[-(2 * v_margin) :, 0, :], smoothed[: v_margin * 2, 0, :], m_constraint
+        smoothed[-(2 * v_margin) :, 0, :], smoothed[: v_margin * 2, 0, :], m_constraint, weights
     )
     rv = np.argmin(abr)
     for x in range(w):
         abr = diffblocks(
-            smoothed[-(2 * v_margin) :, x, :], smoothed[: v_margin * 2, x, :], m_constraint
+            smoothed[-(2 * v_margin) :, x, :], smoothed[: v_margin * 2, x, :], m_constraint, weights
         )
         rv = findmin(abr, rv, step)
         copy_to_h(image, img_orig, v_margin, rv, x)
+
+    print(image.shape, img_orig.shape, v_margin, h_margin)
 
     return image[v_margin:-v_margin, h_margin:-h_margin]
 
@@ -1260,7 +1302,7 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=50)
         self.props["zoom"] = bpy.props.IntProperty(name="Center slice", min=5, default=200)
-        self.props["lch"] = bpy.props.BoolProperty(name="Preserve colors", default=True)
+        self.props["lch"] = bpy.props.BoolProperty(name="Preserve hue", default=True)
         # self.props["A"] = bpy.props.FloatProperty(name="C1", default=1.0, min=0.0, max=1.0)
         # self.props["B"] = bpy.props.FloatProperty(name="C2", default=1.0, min=0.0, max=1.0)
         # self.props["C"] = bpy.props.FloatProperty(name="C3", default=1.0, min=0.0, max=1.0)
@@ -1269,7 +1311,11 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
         self.category = "Balance"
         self.payload = lambda self, image, context: hi_pass_balance(
             # image, self.width, self.zoom, [self.A, self.B, self.C], into_lch=self.lch
-            image, self.width, self.zoom, [1.0, 0.0, 0.0], into_lch=self.lch
+            image,
+            self.width,
+            self.zoom,
+            [1.0, 1.0, 0.0],
+            into_lch=self.lch,
         )
 
 
@@ -1348,44 +1394,45 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
         )
         # self.props["square"] = bpy.props.BoolProperty(name="To square", default=False)
 
-        def diffblocks(a, b, constrain_middle):
-            l = len(a)
-            if constrain_middle >= 0.0 and constrain_middle <= 15.0:
-                penalty = np.abs(((np.arange(l) - (l - 1) * 0.5) * 2.0 / (l - 1))) ** (
-                    constrain_middle + 1.0
-                )
-            else:
-                penalty = 0.0
-            # assert np.all(penalty) >= 0.0
-            # assert np.all(penalty) <= 1.0
-            # TODO: adding power might be better
-            # return rgb_to_luminance(np.abs(a - b)) ** 2.0 + penalty
-            return rgb_to_luminance(np.abs(a - b)) + penalty
+        # def diffblocks(a, b, constrain_middle):
+        #     l = len(a)
+        #     if constrain_middle >= 0.0 and constrain_middle <= 15.0:
+        #         penalty = np.abs(((np.arange(l) - (l - 1) * 0.5) * 2.0 / (l - 1))) ** (
+        #             constrain_middle + 1.0
+        #         )
+        #     else:
+        #         penalty = 0.0
+        #     # assert np.all(penalty) >= 0.0
+        #     # assert np.all(penalty) <= 1.0
+        #     # TODO: adding power might be better
+        #     # return rgb_to_luminance(np.abs(a - b)) ** 2.0 + penalty
+        #     return rgb_to_luminance(np.abs(a - b)) + penalty
 
-        def findmin(ar, loc, step):
-            minloc = loc
-            lar = len(ar)
-            for x in range(-step, step + 1):
-                if loc + x >= 0 and loc + x < lar and ar[loc + x] < ar[minloc]:
-                    minloc = loc + x
-            return minloc
+        # def findmin(ar, loc, step):
+        #     minloc = loc
+        #     lar = len(ar)
+        #     for x in range(-step, step + 1):
+        #         if loc + x >= 0 and loc + x < lar and ar[loc + x] < ar[minloc]:
+        #             minloc = loc + x
+        #     return minloc
 
-        def copy_to_v(image, img_orig, sr, rv, y):
-            w = image.shape[1]
-            hw = w // 2
-            image[y, hw - sr : hw - sr + rv, :] = img_orig[y, w - 2 * sr : w - 2 * sr + rv, :]
-            r2 = sr * 2 - rv
-            image[y, hw + sr - r2 : hw + sr, :] = img_orig[y, sr * 2 - r2 : sr * 2, :]
+        # def copy_to_v(image, img_orig, sr, rv, y):
+        #     w = image.shape[1]
+        #     hw = w // 2
+        #     image[y, hw - sr : hw - sr + rv, :] = img_orig[y, w - 2 * sr : w - 2 * sr + rv, :]
+        #     r2 = sr * 2 - rv
+        #     image[y, hw + sr - r2 : hw + sr, :] = img_orig[y, sr * 2 - r2 : sr * 2, :]
 
-        def copy_to_h(image, img_orig, sr, rv, y):
-            w = image.shape[0]
-            hw = w // 2
-            image[hw - sr : hw - sr + rv, y, :] = img_orig[w - 2 * sr : w - 2 * sr + rv, y, :]
-            r2 = sr * 2 - rv
-            image[hw + sr - r2 : hw + sr, y, :] = img_orig[sr * 2 - r2 : sr * 2, y, :]
+        # def copy_to_h(image, img_orig, sr, rv, y):
+        #     w = image.shape[0]
+        #     hw = w // 2
+        #     image[hw - sr : hw - sr + rv, y, :] = img_orig[w - 2 * sr : w - 2 * sr + rv, y, :]
+        #     r2 = sr * 2 - rv
+        #     image[hw + sr - r2 : hw + sr, y, :] = img_orig[sr * 2 - r2 : sr * 2, y, :]
 
         def _pl(self, image, context):
             h, w = image.shape[0], image.shape[1]
+            print(w, h)
 
             v_margin = self.margin
             h_margin = self.margin
@@ -1393,60 +1440,79 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
             m_constraint = 16.0 - self.constrain
 
             # if self.square:
-            #     max_space = min(h, w)
-            #     h_margin += w - max_space
-            #     v_margin += h - max_space
+            max_space = min(h, w)
+            h_margin += w - max_space
+            v_margin += h - max_space
+            print(h_margin, v_margin)
 
-            # new_width = w
-            # new_height = h
+            from .oklab import srgb_to_LCh, LCh_to_srgb
 
-            # -- vertical cut
-            if self.smooth > 0:
-                smoothed = gaussian_repeat(image, self.smooth)
-            else:
-                smoothed = image.copy()
-            img_orig = image.copy()
-            hw = w // 2
-
-            # right on left
-            image[:, : hw + h_margin, :] = img_orig[:, hw - h_margin :, :]
-
-            # left on right
-            image[:, hw - h_margin :, :] = img_orig[:, : hw + h_margin, :]
-
-            abr = diffblocks(
-                smoothed[0, -(2 * h_margin) :, :], smoothed[0, : h_margin * 2, :], m_constraint
+            kr = knife_seamless(
+                srgb_to_LCh(image),
+                v_margin,
+                h_margin,
+                step,
+                m_constraint,
+                self.smooth,
+                [1.0, 0.0, 0.0],
             )
-            rv = np.argmin(abr)
-            for y in range(h):
-                abr = diffblocks(
-                    smoothed[y, -(2 * h_margin) :, :], smoothed[y, : h_margin * 2, :], m_constraint
-                )
-                rv = findmin(abr, rv, step)
-                copy_to_v(image, img_orig, h_margin, rv, y)
 
-            # -- horizontal cut
-            if self.smooth > 0:
-                smoothed = gaussian_repeat(image, self.smooth)
-            else:
-                smoothed = image.copy()
-            img_orig = image.copy()
-            hw = h // 2
-            image[: hw + v_margin, ...] = img_orig[hw - v_margin :, ...]
-            image[hw - v_margin :, ...] = img_orig[: hw + v_margin, ...]
+            return LCh_to_srgb(kr)
 
-            abr = diffblocks(
-                smoothed[-(2 * v_margin) :, 0, :], smoothed[: v_margin * 2, 0, :], m_constraint
-            )
-            rv = np.argmin(abr)
-            for x in range(w):
-                abr = diffblocks(
-                    smoothed[-(2 * v_margin) :, x, :], smoothed[: v_margin * 2, x, :], m_constraint
-                )
-                rv = findmin(abr, rv, step)
-                copy_to_h(image, img_orig, v_margin, rv, x)
+            # h, w = image.shape[0], image.shape[1]
 
-            return image[v_margin:-v_margin, h_margin:-h_margin]
+            # # new_width = w
+            # # new_height = h
+
+            # # -- vertical cut
+            # if self.smooth > 0:
+            #     smoothed = gaussian_repeat(image, self.smooth)
+            # else:
+            #     smoothed = image.copy()
+            # img_orig = image.copy()
+            # hw = w // 2
+
+            # # right on left
+            # image[:, : hw + h_margin, :] = img_orig[:, hw - h_margin :, :]
+
+            # # left on right
+            # image[:, hw - h_margin :, :] = img_orig[:, : hw + h_margin, :]
+
+            # abr = diffblocks(
+            #     smoothed[0, -(2 * h_margin) :, :], smoothed[0, : h_margin * 2, :], m_constraint
+            # )
+            # rv = np.argmin(abr)
+            # for y in range(h):
+            #     abr = diffblocks(
+            #         smoothed[y, -(2 * h_margin) :, :], smoothed[y, : h_margin * 2, :],
+            #         m_constraint
+            #     )
+            #     rv = findmin(abr, rv, step)
+            #     copy_to_v(image, img_orig, h_margin, rv, y)
+
+            # # -- horizontal cut
+            # if self.smooth > 0:
+            #     smoothed = gaussian_repeat(image, self.smooth)
+            # else:
+            #     smoothed = image.copy()
+            # img_orig = image.copy()
+            # hw = h // 2
+            # image[: hw + v_margin, ...] = img_orig[hw - v_margin :, ...]
+            # image[hw - v_margin :, ...] = img_orig[: hw + v_margin, ...]
+
+            # abr = diffblocks(
+            #     smoothed[-(2 * v_margin) :, 0, :], smoothed[: v_margin * 2, 0, :], m_constraint
+            # )
+            # rv = np.argmin(abr)
+            # for x in range(w):
+            #     abr = diffblocks(
+            #         smoothed[-(2 * v_margin) :, x, :], smoothed[: v_margin * 2, x, :],
+            #         m_constraint
+            #     )
+            #     rv = findmin(abr, rv, step)
+            #     copy_to_h(image, img_orig, v_margin, rv, x)
+
+            # return image[v_margin:-v_margin, h_margin:-h_margin]
 
         self.payload = _pl
 
