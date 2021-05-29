@@ -21,8 +21,8 @@ bl_info = {
     "author": "Tommi Hyppänen (ambi)",
     "location": "Image Editor > Side Panel > Image",
     "documentation": "https://blenderartists.org/t/seamless-texture-patching-and-filtering-addon",
-    "version": (0, 1, 29),
-    "blender": (2, 81, 0),
+    "version": (0, 2, 0),
+    "blender": (2, 93, 0),
 }
 
 import bpy  # noqa
@@ -36,13 +36,14 @@ rnd = random.random
 from . import image_ops
 import importlib
 
-from .oklab import linear_to_srgb, srgb_to_linear
+# from .oklab import linear_to_srgb, srgb_to_linear
 
 importlib.reload(image_ops)
 
 import json
 from .cl_abstraction import CLDev
 from . import toml_loader
+
 importlib.reload(toml_loader)
 cl_load = toml_loader.load
 
@@ -449,26 +450,54 @@ def degaussianize(source, transforms):
     return output
 
 
-def hi_pass_balance(pix, s, zoom):
+def hi_pass_balance(pix, s, zoom, scalers, into_lch=True):
+    from .oklab import LCh_to_srgb, srgb_to_LCh
+
+    if scalers == None or scalers == []:
+        scalers = [1.0, 1.0, 1.0]
+
+    assert len(scalers) == 3
+    assert type(scalers[0]) == float
+
+    # separate hue, saturation, value
+    if into_lch:
+        pix = srgb_to_LCh(pix)
+
+    # save original
     bg = pix.copy()
 
+    # limit middle sampler max dimensions to the image max dimensions
     yzm = pix.shape[0] // 2
     xzm = pix.shape[1] // 2
-
     yzoom = zoom if zoom < yzm else yzm
     xzoom = zoom if zoom < xzm else xzm
 
+    # middle value = (low + high) / 2
     pixmin = np.min(pix)
     pixmax = np.max(pix)
     med = (pixmin + pixmax) / 2
+
+    # high pass
     # TODO: np.mean
     gas = gaussian_repeat(pix - med, s) + med
     pix = (pix - gas) * 0.5 + 0.5
+
+    # use the middle sampler to normalize histogram
     for c in range(3):
         pix[..., c] = hist_match(
             pix[..., c], bg[yzm - yzoom : yzm + yzoom, xzm - xzoom : xzm + xzoom, c]
         )
+
+    # apply scalers
+    for c in range(3):
+        assert scalers[c] >= 0.0 and scalers[c] <= 1.0
+        pix[..., c] = pix[..., c] * scalers[c] + bg[..., c] * (1.0 - scalers[c])
+
     pix[..., 3] = bg[..., 3]
+
+    if into_lch:
+        pix = LCh_to_srgb(pix)
+
     return pix
 
 
@@ -1231,10 +1260,17 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=50)
         self.props["zoom"] = bpy.props.IntProperty(name="Center slice", min=5, default=200)
+        self.props["lch"] = bpy.props.BoolProperty(name="Preserve colors", default=True)
+        # self.props["A"] = bpy.props.FloatProperty(name="C1", default=1.0, min=0.0, max=1.0)
+        # self.props["B"] = bpy.props.FloatProperty(name="C2", default=1.0, min=0.0, max=1.0)
+        # self.props["C"] = bpy.props.FloatProperty(name="C3", default=1.0, min=0.0, max=1.0)
         self.prefix = "hipass_balance"
         self.info = "Remove low frequencies from the image"
         self.category = "Balance"
-        self.payload = lambda self, image, context: hi_pass_balance(image, self.width, self.zoom)
+        self.payload = lambda self, image, context: hi_pass_balance(
+            # image, self.width, self.zoom, [self.A, self.B, self.C], into_lch=self.lch
+            image, self.width, self.zoom, [1.0, 0.0, 0.0], into_lch=self.lch
+        )
 
 
 class ContrastBalance_IOP(image_ops.ImageOperatorGenerator):
@@ -1521,8 +1557,11 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
             #     json.dump(json_out, out_file)
 
             import os
-            directory = os.path.dirname(os.path.realpath(__file__))
-            with open(os.path.join(directory, "default_material.json"), "r") as in_file:
+
+            with open(
+                os.path.join(os.path.dirname(os.path.realpath(__file__)), "default_material.json"),
+                "r",
+            ) as in_file:
                 json_in = json.load(in_file)
 
             mat = bpy.data.materials.get(self.mat_name) or bpy.data.materials.new(self.mat_name)
@@ -1546,7 +1585,7 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
             print("Make seamless diffuse")
             # TODO: check this is optimal
             # data_d = hi_pass_balance(base_data, min_dim, min_dim // 2)
-            data_d = hi_pass_balance(base_data, min_dim, min_dim)
+            data_d = hi_pass_balance(base_data, min_dim, min_dim, [1.0, 0.0, 0.0])
             knife_result = knife_seamless(data_d, h // 3 // 2, w // 3 // 2, 4, 12.0, 8)
 
             # Save new width and height after seamless knife cut
@@ -1570,7 +1609,7 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
                 img_h, curvature_to_height(knife_result, 0.5, iterations=500)
             )
             mat.node_tree.nodes["Image Texture.002"].image = img_h
-            mat.node_tree.nodes['Invert'].inputs['Fac'].default_value = 0.77
+            mat.node_tree.nodes["Invert"].inputs["Fac"].default_value = 0.77
 
             return image
 

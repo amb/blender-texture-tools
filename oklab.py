@@ -65,3 +65,17 @@ def srgb_to_linear(c):
     assert c.dtype == np.float32
     return np.where(c >= 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
 
+
+def srgb_to_LCh(c):
+    t = linear_srgb_to_oklab(srgb_to_linear(c))
+    C = np.sqrt(t[..., 1] ** 2 + t[..., 2] ** 2)
+    h = np.arctan2(t[..., 2], t[..., 1])
+    L = t[..., 0]
+    return np.dstack([L, C, h, t[..., 3]])
+
+
+def LCh_to_srgb(c):
+    L, C, h = c[..., 0], c[..., 1], c[..., 2]
+    a = C * np.cos(h)
+    b = C * np.sin(h)
+    return linear_to_srgb(oklab_to_linear_srgb(np.dstack([L, a, b, c[..., 3]])))
