@@ -1663,13 +1663,14 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
 
             img_d = image_ops.image_create_overwrite(base_image.name + "_d", w, h, "sRGB")
             image_ops.ndarray_to_image(img_d, knife_result)
-            mat.node_tree.nodes["Image Texture.001"].image = img_d
+            mat.node_tree.nodes["Diffuse Texture"].image = img_d
 
             # ----- Create normal map image
             print("Make normal map")
             img_n = image_ops.image_create_overwrite(base_image.name + "_n", w, h, "Non-Color")
-            image_ops.ndarray_to_image(img_n, texture_to_normals(knife_result, 0.1, 0.2, 0.7))
-            mat.node_tree.nodes["Image Texture"].image = img_n
+            # image_ops.ndarray_to_image(img_n, texture_to_normals(knife_result, 0.1, 0.2, 0.7))
+            image_ops.ndarray_to_image(img_n, texture_to_normals(knife_result, 0.05, 0.3, 0.6))
+            mat.node_tree.nodes["Normal Texture"].image = img_n
 
             # ----- Create height map
             print("Make height map for roughness")
@@ -1677,8 +1678,10 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
             image_ops.ndarray_to_image(
                 img_h, curvature_to_height(knife_result, 0.5, iterations=500)
             )
-            mat.node_tree.nodes["Image Texture.002"].image = img_h
-            mat.node_tree.nodes["Invert"].inputs["Fac"].default_value = 0.77
+            mat.node_tree.nodes["Roughness Texture"].image = img_h
+            mat.node_tree.nodes["Invert"].inputs["Fac"].default_value = 1.0
+            mat.node_tree.nodes["Gamma"].inputs["Gamma"].default_value = 0.5
+            mat.node_tree.nodes["Normal Map"].inputs["Strength"].default_value = 4.0
 
             return image
 

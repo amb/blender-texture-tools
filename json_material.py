@@ -12,6 +12,7 @@ def read_material_nodes_to_json(mat):
         d_temp["bl_idname"] = n.bl_idname
         d_temp["dimensions"] = tuple(i for i in n.dimensions)
         d_temp["location"] = tuple(i for i in n.location)
+        d_temp["name"] = n.name
 
         n_inputs = []
         for i in n.inputs.values():
@@ -59,6 +60,7 @@ def overwrite_material_from_json(mat, json_in):
     for nk, nv in d_nodes.items():
         node = nodes.new(nv["bl_idname"])
         node.location = nv["location"]
+        node.name = nv["name"]
         new_nodes[nk] = node
 
     # Link nodes (use only inputs data)
