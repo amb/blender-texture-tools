@@ -874,8 +874,8 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth, weight
         # assert np.all(penalty) >= 0.0
         # assert np.all(penalty) <= 1.0
 
-        # diff = np.abs(a - b)
-        diff = a
+        diff = np.abs(a - b)
+        # diff = a
 
         # normalize
         # diff += np.min(diff)
@@ -902,11 +902,11 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth, weight
         # sr = stripe width / 2, y = stripe location, rv = cut location
         w = image.shape[1]
         hw = w // 2
-        L2 = 16
+        L2 = 8
         L = L2 * 2
 
-        image[y, hw - sr : hw - sr + rv - L2, :] = img_orig[y, -2 * sr : -2 * sr + rv - L2, :]
-        image[y, hw - sr + rv + L2 : hw + sr, :] = img_orig[y, rv + L2 : sr * 2, :]
+        image[y, hw - sr : hw - sr + rv, :] = img_orig[y, -2 * sr : -2 * sr + rv, :]
+        image[y, hw - sr + rv : hw + sr, :] = img_orig[y, rv : sr * 2, :]
 
         la = hw - sr + rv
         lb = rv
@@ -929,12 +929,12 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth, weight
 
             image[y, la + l, :] = lval * (1.0 - d) + rval * d
 
-    def copy_to_h(image, img_orig, sr, rv, y):
-        w = image.shape[0]
-        hw = w // 2
-        image[hw - sr : hw - sr + rv, y, :] = img_orig[w - 2 * sr : w - 2 * sr + rv, y, :]
+    def copy_to_h(image, img_orig, sr, rv, x):
+        h = image.shape[0]
+        hh = h // 2
+        image[hh - sr : hh - sr + rv, x, :] = img_orig[h - 2 * sr : h - 2 * sr + rv, x, :]
         r2 = sr * 2 - rv
-        image[hw + sr - r2 : hw + sr, y, :] = img_orig[sr * 2 - r2 : sr * 2, y, :]
+        image[hh + sr - r2 : hh + sr, x, :] = img_orig[sr * 2 - r2 : sr * 2, x, :]
 
     h, w = image.shape[0], image.shape[1]
 
@@ -1302,7 +1302,8 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         self.props["width"] = bpy.props.IntProperty(name="Width", min=1, default=50)
         self.props["zoom"] = bpy.props.IntProperty(name="Center slice", min=5, default=200)
-        self.props["lch"] = bpy.props.BoolProperty(name="Preserve hue", default=True)
+        self.props["hue"] = bpy.props.BoolProperty(name="Preserve hue", default=True)
+        self.props["sat"] = bpy.props.BoolProperty(name="Preserve chroma", default=False)
         # self.props["A"] = bpy.props.FloatProperty(name="C1", default=1.0, min=0.0, max=1.0)
         # self.props["B"] = bpy.props.FloatProperty(name="C2", default=1.0, min=0.0, max=1.0)
         # self.props["C"] = bpy.props.FloatProperty(name="C3", default=1.0, min=0.0, max=1.0)
@@ -1314,8 +1315,8 @@ class HiPassBalance_IOP(image_ops.ImageOperatorGenerator):
             image,
             self.width,
             self.zoom,
-            [1.0, 1.0, 0.0],
-            into_lch=self.lch,
+            [1.0, 1.0 - 1.0 * self.sat, 1.0 - 1.0 * self.hue],
+            into_lch=True,
         )
 
 
@@ -1652,7 +1653,9 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
             # TODO: check this is optimal
             # data_d = hi_pass_balance(base_data, min_dim, min_dim // 2)
             data_d = hi_pass_balance(base_data, min_dim, min_dim, [1.0, 0.0, 0.0])
-            knife_result = knife_seamless(data_d, h // 3 // 2, w // 3 // 2, 4, 12.0, 8)
+            knife_result = knife_seamless(
+                data_d, h // 3 // 2, w // 3 // 2, 4, 12.0, 8, [1.0, 1.0, 1.0]
+            )
 
             # Save new width and height after seamless knife cut
             h, w = knife_result.shape[:2]
