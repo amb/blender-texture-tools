@@ -17,7 +17,7 @@
 # Copyright: Tommi Hyppänen
 
 
-import bpy  # noqa:F401
+import bpy  # noqa
 
 import numpy as np
 

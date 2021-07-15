@@ -107,7 +107,9 @@ class CLDev:
         print(self.supported_rgba)
 
         # Ensure we have RGBA float32
-        assert cl.cl_channel_type.CL_FLOAT in self.supported_rgba
+        assert (
+            cl.cl_channel_type.CL_FLOAT in self.supported_rgba
+        ), "Your device doesn't support CL_FLOAT for RGBA"
 
         self.queue = cl.clCreateCommandQueue(self.ctx)
         self.kernels = {}
@@ -157,11 +159,12 @@ class CLDev:
         return gc_c
 
     def run(self, kernel, params, inputs, outputs, shape=None):
-        "Run CL kernel on params. Multiple in, single out. CLImage buffers."
-        assert len(inputs) > 0 or len(outputs) > 0
-        assert shape is not None
-        assert type(shape[1]) == int
-        assert type(shape[0]) == int
+        "Run CL kernel on params. Multiple in, single out"
+        assert len(outputs) > 0, "No outputs given"
+        assert shape is not None, "Invalid kernel shape"
+        assert type(shape[1]) == int, "Invalid kernel shape"
+        assert type(shape[0]) == int, "Invalid kernel shape"
+        assert shape in [(a.width, a.height) for a in outputs], "Kernel shape not in outputs"
         assert shape[1] % 8 == 0, "Input image height must be divisible by 8"
         assert shape[0] % 8 == 0, "Input image width must be divisible by 8"
         # width, height, params, inputs, outputs

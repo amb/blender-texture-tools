@@ -26,6 +26,7 @@ bl_info = {
 }
 
 import bpy  # noqa
+from bpy.props import FloatProperty, IntProperty, StringProperty, EnumProperty  # noqa
 import functools
 import numpy as np
 import random
@@ -874,8 +875,11 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth, weight
         # assert np.all(penalty) >= 0.0
         # assert np.all(penalty) <= 1.0
 
-        diff = np.abs(a - b)
-        # diff = a
+        # abd = np.abs(a - b)
+        # abm = np.minimum(a, b)
+        # diff = np.where(abm < abd, abm, abd)
+
+        diff = a
 
         # normalize
         # diff += np.min(diff)
@@ -883,12 +887,7 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth, weight
         # if diffm > 0.0:
         #     diff /= diffm
 
-        return (
-            diff[..., 0] * weights[0]
-            + diff[..., 1] * weights[1]
-            + diff[..., 2] * weights[2]
-            + penalty
-        )
+        return diff[..., 0] * wg[0] + diff[..., 1] * wg[1] + diff[..., 2] * wg[2] + penalty
 
     def findmin(ar, loc, step):
         minloc = loc
@@ -920,6 +919,8 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth, weight
             rval = img_orig[y, lb + l, :]
 
             # blend more of the selection which has higher lightness
+            # d = d + (rgb_to_luminance(rval) * d - rgb_to_luminance(lval) * (1.0 - d)) * 4.0
+
             d = d + (rval[..., 0] * d - lval[..., 0] * (1.0 - d)) * 2.0
 
             if d < 0.0:
@@ -947,8 +948,8 @@ def knife_seamless(image, v_margin, h_margin, step, m_constraint, smooth, weight
     # new_height = h
 
     # Make sure result is divisible by 8
-    v_margin += -((h + v_margin) % 16)
-    h_margin += -((w + h_margin) % 16)
+    v_margin += -((h + v_margin) % 8)
+    h_margin += -((w + h_margin) % 8)
 
     v_margin //= 2
     h_margin //= 2
@@ -1052,9 +1053,9 @@ class Random_IOP(image_ops.ImageOperatorGenerator):
 
 class Swizzle_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["order_a"] = bpy.props.StringProperty(name="Order A", default="RGBA")
-        self.props["order_b"] = bpy.props.StringProperty(name="Order B", default="RBGa")
-        self.props["direction"] = bpy.props.EnumProperty(
+        self.props["order_a"] = StringProperty(name="Order A", default="RGBA")
+        self.props["order_b"] = StringProperty(name="Order B", default="RBGa")
+        self.props["direction"] = EnumProperty(
             name="Direction", items=[("ATOB", "A to B", "", 1), ("BTOA", "B to A", "", 2)]
         )
         self.prefix = "swizzle"
@@ -1219,7 +1220,7 @@ class TextureToNormals_IOP(image_ops.ImageOperatorGenerator):
 
 class FillAlpha_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
-        self.props["style"] = bpy.props.EnumProperty(
+        self.props["style"] = EnumProperty(
             name="Style",
             items=[("black", "Black color", "", 1), ("tangent", "Neutral tangent", "", 2)],
         )
@@ -1242,7 +1243,7 @@ class GaussianBlur_IOP(image_ops.ImageOperatorGenerator):
 class Median_IOP(image_ops.ImageOperatorGenerator):
     def generate(self):
         # self.props["width"] = bpy.props.IntProperty(name="Width", min=3, max=9, default=3)
-        self.props["width"] = bpy.props.EnumProperty(
+        self.props["width"] = EnumProperty(
             name="Width",
             items=[
                 ("3", "3", "", 3),
@@ -1385,51 +1386,10 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Optimal knife cut into seamless"
         self.category = "Seamless"
 
-        self.props["step"] = bpy.props.IntProperty(name="Step", min=1, max=16, default=3)
-        self.props["margin"] = bpy.props.IntProperty(name="Margin", min=4, max=256, default=40)
-        self.props["smooth"] = bpy.props.IntProperty(
-            name="Cut smoothing", min=0, max=64, default=16
-        )
-        self.props["constrain"] = bpy.props.FloatProperty(
-            name="Middle constraint", min=0.0, max=15.0, default=2.0
-        )
-        # self.props["square"] = bpy.props.BoolProperty(name="To square", default=False)
-
-        # def diffblocks(a, b, constrain_middle):
-        #     l = len(a)
-        #     if constrain_middle >= 0.0 and constrain_middle <= 15.0:
-        #         penalty = np.abs(((np.arange(l) - (l - 1) * 0.5) * 2.0 / (l - 1))) ** (
-        #             constrain_middle + 1.0
-        #         )
-        #     else:
-        #         penalty = 0.0
-        #     # assert np.all(penalty) >= 0.0
-        #     # assert np.all(penalty) <= 1.0
-        #     # TODO: adding power might be better
-        #     # return rgb_to_luminance(np.abs(a - b)) ** 2.0 + penalty
-        #     return rgb_to_luminance(np.abs(a - b)) + penalty
-
-        # def findmin(ar, loc, step):
-        #     minloc = loc
-        #     lar = len(ar)
-        #     for x in range(-step, step + 1):
-        #         if loc + x >= 0 and loc + x < lar and ar[loc + x] < ar[minloc]:
-        #             minloc = loc + x
-        #     return minloc
-
-        # def copy_to_v(image, img_orig, sr, rv, y):
-        #     w = image.shape[1]
-        #     hw = w // 2
-        #     image[y, hw - sr : hw - sr + rv, :] = img_orig[y, w - 2 * sr : w - 2 * sr + rv, :]
-        #     r2 = sr * 2 - rv
-        #     image[y, hw + sr - r2 : hw + sr, :] = img_orig[y, sr * 2 - r2 : sr * 2, :]
-
-        # def copy_to_h(image, img_orig, sr, rv, y):
-        #     w = image.shape[0]
-        #     hw = w // 2
-        #     image[hw - sr : hw - sr + rv, y, :] = img_orig[w - 2 * sr : w - 2 * sr + rv, y, :]
-        #     r2 = sr * 2 - rv
-        #     image[hw + sr - r2 : hw + sr, y, :] = img_orig[sr * 2 - r2 : sr * 2, y, :]
+        self.props["step"] = IntProperty(name="Step", min=1, max=16, default=3)
+        self.props["margin"] = IntProperty(name="Margin", min=4, max=256, default=40)
+        self.props["smooth"] = IntProperty(name="Cut smoothing", min=0, max=64, default=16)
+        self.props["constrain"] = FloatProperty(name="Constraint", min=0.0, max=15.0, default=2.0)
 
         def _pl(self, image, context):
             h, w = image.shape[0], image.shape[1]
@@ -1446,74 +1406,23 @@ class KnifeSeamless_IOP(image_ops.ImageOperatorGenerator):
             v_margin += h - max_space
             print(h_margin, v_margin)
 
-            from .oklab import srgb_to_LCh, LCh_to_srgb
+            from .oklab import srgb_to_Lab, Lab_to_srgb
 
             kr = knife_seamless(
-                srgb_to_LCh(image),
+                srgb_to_Lab(image),
+                # srgb_to_LCh(image),
+                # image,
                 v_margin,
                 h_margin,
                 step,
                 m_constraint,
                 self.smooth,
-                [1.0, 0.0, 0.0],
+                [1.0, 0.2, 0.2],
             )
 
-            return LCh_to_srgb(kr)
-
-            # h, w = image.shape[0], image.shape[1]
-
-            # # new_width = w
-            # # new_height = h
-
-            # # -- vertical cut
-            # if self.smooth > 0:
-            #     smoothed = gaussian_repeat(image, self.smooth)
-            # else:
-            #     smoothed = image.copy()
-            # img_orig = image.copy()
-            # hw = w // 2
-
-            # # right on left
-            # image[:, : hw + h_margin, :] = img_orig[:, hw - h_margin :, :]
-
-            # # left on right
-            # image[:, hw - h_margin :, :] = img_orig[:, : hw + h_margin, :]
-
-            # abr = diffblocks(
-            #     smoothed[0, -(2 * h_margin) :, :], smoothed[0, : h_margin * 2, :], m_constraint
-            # )
-            # rv = np.argmin(abr)
-            # for y in range(h):
-            #     abr = diffblocks(
-            #         smoothed[y, -(2 * h_margin) :, :], smoothed[y, : h_margin * 2, :],
-            #         m_constraint
-            #     )
-            #     rv = findmin(abr, rv, step)
-            #     copy_to_v(image, img_orig, h_margin, rv, y)
-
-            # # -- horizontal cut
-            # if self.smooth > 0:
-            #     smoothed = gaussian_repeat(image, self.smooth)
-            # else:
-            #     smoothed = image.copy()
-            # img_orig = image.copy()
-            # hw = h // 2
-            # image[: hw + v_margin, ...] = img_orig[hw - v_margin :, ...]
-            # image[hw - v_margin :, ...] = img_orig[: hw + v_margin, ...]
-
-            # abr = diffblocks(
-            #     smoothed[-(2 * v_margin) :, 0, :], smoothed[: v_margin * 2, 0, :], m_constraint
-            # )
-            # rv = np.argmin(abr)
-            # for x in range(w):
-            #     abr = diffblocks(
-            #         smoothed[-(2 * v_margin) :, x, :], smoothed[: v_margin * 2, x, :],
-            #         m_constraint
-            #     )
-            #     rv = findmin(abr, rv, step)
-            #     copy_to_h(image, img_orig, v_margin, rv, x)
-
-            # return image[v_margin:-v_margin, h_margin:-h_margin]
+            return Lab_to_srgb(kr)
+            # return LCh_to_srgb(kr)
+            # return kr
 
         self.payload = _pl
 
@@ -1606,7 +1515,7 @@ class ImageToMaterial_IOP(image_ops.ImageOperatorGenerator):
         self.info = "Image to material"
         self.category = "Materials"
 
-        self.props["mat_name"] = bpy.props.StringProperty(
+        self.props["mat_name"] = StringProperty(
             name="Name", description="Material name", default="Test"
         )
 

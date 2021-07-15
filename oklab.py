@@ -79,3 +79,11 @@ def LCh_to_srgb(c):
     a = C * np.cos(h)
     b = C * np.sin(h)
     return linear_to_srgb(oklab_to_linear_srgb(np.dstack([L, a, b, c[..., 3]])))
+
+
+def srgb_to_Lab(c):
+    return linear_srgb_to_oklab(srgb_to_linear(c))
+
+
+def Lab_to_srgb(c):
+    return linear_to_srgb(oklab_to_linear_srgb(c))

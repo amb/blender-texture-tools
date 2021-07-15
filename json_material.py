@@ -59,6 +59,7 @@ def overwrite_material_from_json(mat, json_in):
     new_nodes = {}
     for nk, nv in d_nodes.items():
         node = nodes.new(nv["bl_idname"])
+        node.location = nv["dimensions"]
         node.location = nv["location"]
         node.name = nv["name"]
         new_nodes[nk] = node
