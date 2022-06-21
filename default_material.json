@@ -1,1 +1,282 @@
-"{\n    \"Principled BSDF\": {\n        \"bl_idname\": \"ShaderNodeBsdfPrincipled\",\n        \"dimensions\": [\n            253.3333740234375,\n            625.9118041992188\n        ],\n        \"location\": [\n            251.76904296875,\n            243.39012145996094\n        ],\n        \"name\": \"Principled BSDF\",\n        \"inputs\": [\n            {\n                \"input_name\": \"Base Color\",\n                \"input_type\": \"node\",\n                \"from_node_name\": \"Diffuse Texture\",\n                \"from_socket_name\": \"Color\"\n            },\n            {\n                \"input_name\": \"Subsurface\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Subsurface Radius\",\n                \"input_type\": \"none\"\n            },\n            {\n                \"input_name\": \"Subsurface Color\",\n                \"input_type\": \"none\"\n            },\n            {\n                \"input_name\": \"Metallic\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Specular\",\n                \"input_type\": \"float\",\n                \"value\": 0.5\n            },\n            {\n                \"input_name\": \"Specular Tint\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Roughness\",\n                \"input_type\": \"node\",\n                \"from_node_name\": \"Gamma\",\n                \"from_socket_name\": \"Color\"\n            },\n            {\n                \"input_name\": \"Anisotropic\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Anisotropic Rotation\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Sheen\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Sheen Tint\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Clearcoat\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Clearcoat Roughness\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"IOR\",\n                \"input_type\": \"none\"\n            },\n            {\n                \"input_name\": \"Transmission\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Transmission Roughness\",\n                \"input_type\": \"float\",\n                \"value\": 0.0\n            },\n            {\n                \"input_name\": \"Emission\",\n                \"input_type\": \"none\"\n            },\n            {\n                \"input_name\": \"Emission Strength\",\n                \"input_type\": \"none\"\n            },\n            {\n                \"input_name\": \"Alpha\",\n                \"input_type\": \"float\",\n                \"value\": 1.0\n            },\n            {\n                \"input_name\": \"Normal\",\n                \"input_type\": \"node\",\n                \"from_node_name\": \"Normal Map\",\n                \"from_socket_name\": \"Normal\"\n            },\n            {\n                \"input_name\": \"Clearcoat Normal\",\n                \"input_type\": \"none\"\n            },\n            {\n                \"input_name\": \"Tangent\",\n                \"input_type\": \"none\"\n            }\n        ]\n    },\n    \"Material Output\": {\n        \"bl_idname\": \"ShaderNodeOutputMaterial\",\n        \"dimensions\": [\n            147.77777099609375,\n            124.91180419921875\n        ],\n        \"location\": [\n            541.76904296875,\n            243.39012145996094\n        ],\n        \"name\": \"Material Output\",\n        \"inputs\": [\n            {\n                \"input_name\": \"Surface\",\n                \"input_type\": \"node\",\n                \"from_node_name\": \"Principled BSDF\",\n                \"from_socket_name\": \"BSDF\"\n            },\n            {\n                \"input_name\": \"Volume\",\n                \"input_type\": \"none\"\n            },\n            {\n                \"input_name\": \"Displacement\",\n                \"input_type\": \"none\"\n            }\n        ]\n    },\n    \"Normal Map\": {\n        \"bl_idname\": \"ShaderNodeNormalMap\",\n        \"dimensions\": [\n            158.33334350585938,\n            156.2455596923828\n        ],\n        \"location\": [\n            -3.519845962524414,\n            -213.87261962890625\n        ],\n        \"name\": \"Normal Map\",\n        \"inputs\": [\n            {\n                \"input_name\": \"Strength\",\n                \"input_type\": \"none\"\n            },\n            {\n                \"input_name\": \"Color\",\n                \"input_type\": \"node\",\n                \"from_node_name\": \"Normal Texture\",\n                \"from_socket_name\": \"Color\"\n            }\n        ]\n    },\n    \"Invert\": {\n        \"bl_idname\": \"ShaderNodeInvert\",\n        \"dimensions\": [\n            147.7777862548828,\n            100.61482238769531\n        ],\n        \"location\": [\n            -172.31179809570312,\n            50.79298400878906\n        ],\n        \"name\": \"Invert\",\n        \"inputs\": [\n            {\n                \"input_name\": \"Fac\",\n                \"input_type\": \"float\",\n                \"value\": 1.0\n            },\n            {\n                \"input_name\": \"Color\",\n                \"input_type\": \"node\",\n                \"from_node_name\": \"Roughness Texture\",\n                \"from_socket_name\": \"Color\"\n            }\n        ]\n    },\n    \"Diffuse Texture\": {\n        \"bl_idname\": \"ShaderNodeTexImage\",\n        \"dimensions\": [\n            253.33334350585938,\n            262.8544921875\n        ],\n        \"location\": [\n            -149.46902465820312,\n            360.80950927734375\n        ],\n        \"name\": \"Diffuse Texture\",\n        \"inputs\": [\n            {\n                \"input_name\": \"Vector\",\n                \"input_type\": \"none\"\n            }\n        ]\n    },\n    \"Roughness Texture\": {\n        \"bl_idname\": \"ShaderNodeTexImage\",\n        \"dimensions\": [\n            253.33334350585938,\n            262.9666748046875\n        ],\n        \"location\": [\n            -462.3578796386719,\n            78.60002136230469\n        ],\n        \"name\": \"Roughness Texture\",\n        \"inputs\": [\n            {\n                \"input_name\": \"Vector\",\n                \"input_type\": \"none\"\n            }\n        ]\n    },\n    \"Normal Texture\": {\n        \"bl_idname\": \"ShaderNodeTexImage\",\n        \"dimensions\": [\n            253.33334350585938,\n            260.422607421875\n        ],\n        \"location\": [\n            -368.22869873046875,\n            -203.28384399414062\n        ],\n        \"name\": \"Normal Texture\",\n        \"inputs\": [\n            {\n                \"input_name\": \"Vector\",\n                \"input_type\": \"none\"\n            }\n        ]\n    },\n    \"Gamma\": {\n        \"bl_idname\": \"ShaderNodeGamma\",\n        \"dimensions\": [\n            147.7777862548828,\n            100.00167846679688\n        ],\n        \"location\": [\n            31.7690486907959,\n            49.264747619628906\n        ],\n        \"name\": \"Gamma\",\n        \"inputs\": [\n            {\n                \"input_name\": \"Color\",\n                \"input_type\": \"node\",\n                \"from_node_name\": \"Invert\",\n                \"from_socket_name\": \"Color\"\n            },\n            {\n                \"input_name\": \"Gamma\",\n                \"input_type\": \"none\"\n            }\n        ]\n    }\n}"
+{
+    "Principled BSDF": {
+        "bl_idname": "ShaderNodeBsdfPrincipled",
+        "dimensions": [
+            253.3333740234375,
+            625.9118041992188
+        ],
+        "location": [
+            251.76904296875,
+            243.39012145996094
+        ],
+        "name": "Principled BSDF",
+        "inputs": [
+            {
+                "input_name": "Base Color",
+                "input_type": "node",
+                "from_node_name": "Diffuse Texture",
+                "from_socket_name": "Color"
+            },
+            {
+                "input_name": "Subsurface",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Subsurface Radius",
+                "input_type": "none"
+            },
+            {
+                "input_name": "Subsurface Color",
+                "input_type": "none"
+            },
+            {
+                "input_name": "Metallic",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Specular",
+                "input_type": "float",
+                "value": 0.5
+            },
+            {
+                "input_name": "Specular Tint",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Roughness",
+                "input_type": "node",
+                "from_node_name": "Gamma",
+                "from_socket_name": "Color"
+            },
+            {
+                "input_name": "Anisotropic",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Anisotropic Rotation",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Sheen",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Sheen Tint",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Clearcoat",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Clearcoat Roughness",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "IOR",
+                "input_type": "none"
+            },
+            {
+                "input_name": "Transmission",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Transmission Roughness",
+                "input_type": "float",
+                "value": 0.0
+            },
+            {
+                "input_name": "Emission",
+                "input_type": "none"
+            },
+            {
+                "input_name": "Emission Strength",
+                "input_type": "none"
+            },
+            {
+                "input_name": "Alpha",
+                "input_type": "float",
+                "value": 1.0
+            },
+            {
+                "input_name": "Normal",
+                "input_type": "node",
+                "from_node_name": "Normal Map",
+                "from_socket_name": "Normal"
+            },
+            {
+                "input_name": "Clearcoat Normal",
+                "input_type": "none"
+            },
+            {
+                "input_name": "Tangent",
+                "input_type": "none"
+            }
+        ]
+    },
+    "Material Output": {
+        "bl_idname": "ShaderNodeOutputMaterial",
+        "dimensions": [
+            147.77777099609375,
+            124.91180419921875
+        ],
+        "location": [
+            541.76904296875,
+            243.39012145996094
+        ],
+        "name": "Material Output",
+        "inputs": [
+            {
+                "input_name": "Surface",
+                "input_type": "node",
+                "from_node_name": "Principled BSDF",
+                "from_socket_name": "BSDF"
+            },
+            {
+                "input_name": "Volume",
+                "input_type": "none"
+            },
+            {
+                "input_name": "Displacement",
+                "input_type": "none"
+            }
+        ]
+    },
+    "Normal Map": {
+        "bl_idname": "ShaderNodeNormalMap",
+        "dimensions": [
+            158.33334350585938,
+            156.2455596923828
+        ],
+        "location": [
+            -3.519845962524414,
+            -213.87261962890625
+        ],
+        "name": "Normal Map",
+        "inputs": [
+            {
+                "input_name": "Strength",
+                "input_type": "none"
+            },
+            {
+                "input_name": "Color",
+                "input_type": "node",
+                "from_node_name": "Normal Texture",
+                "from_socket_name": "Color"
+            }
+        ]
+    },
+    "Invert": {
+        "bl_idname": "ShaderNodeInvert",
+        "dimensions": [
+            147.7777862548828,
+            100.61482238769531
+        ],
+        "location": [
+            -172.31179809570312,
+            50.79298400878906
+        ],
+        "name": "Invert",
+        "inputs": [
+            {
+                "input_name": "Fac",
+                "input_type": "float",
+                "value": 1.0
+            },
+            {
+                "input_name": "Color",
+                "input_type": "node",
+                "from_node_name": "Roughness Texture",
+                "from_socket_name": "Color"
+            }
+        ]
+    },
+    "Diffuse Texture": {
+        "bl_idname": "ShaderNodeTexImage",
+        "dimensions": [
+            253.33334350585938,
+            262.8544921875
+        ],
+        "location": [
+            -149.46902465820312,
+            360.80950927734375
+        ],
+        "name": "Diffuse Texture",
+        "inputs": [
+            {
+                "input_name": "Vector",
+                "input_type": "none"
+            }
+        ]
+    },
+    "Roughness Texture": {
+        "bl_idname": "ShaderNodeTexImage",
+        "dimensions": [
+            253.33334350585938,
+            262.9666748046875
+        ],
+        "location": [
+            -462.3578796386719,
+            78.60002136230469
+        ],
+        "name": "Roughness Texture",
+        "inputs": [
+            {
+                "input_name": "Vector",
+                "input_type": "none"
+            }
+        ]
+    },
+    "Normal Texture": {
+        "bl_idname": "ShaderNodeTexImage",
+        "dimensions": [
+            253.33334350585938,
+            260.422607421875
+        ],
+        "location": [
+            -368.22869873046875,
+            -203.28384399414062
+        ],
+        "name": "Normal Texture",
+        "inputs": [
+            {
+                "input_name": "Vector",
+                "input_type": "none"
+            }
+        ]
+    },
+    "Gamma": {
+        "bl_idname": "ShaderNodeGamma",
+        "dimensions": [
+            147.7777862548828,
+            100.00167846679688
+        ],
+        "location": [
+            31.7690486907959,
+            49.264747619628906
+        ],
+        "name": "Gamma",
+        "inputs": [
+            {
+                "input_name": "Color",
+                "input_type": "node",
+                "from_node_name": "Invert",
+                "from_socket_name": "Color"
+            },
+            {
+                "input_name": "Gamma",
+                "input_type": "none"
+            }
+        ]
+    }
+}
